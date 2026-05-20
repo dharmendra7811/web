@@ -23,6 +23,16 @@ export async function createProject(name: string, prdText: string): Promise<Proj
   return res.json();
 }
 
+export async function deleteProject(id: string): Promise<{ success: boolean }> {
+  const res = await fetch(`${API_URL}/api/projects/${id}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    throw new Error('Failed to delete project');
+  }
+  return res.json();
+}
+
 export async function getProject(id: string): Promise<Project> {
   const res = await fetch(`${API_URL}/api/projects/${id}`);
   if (!res.ok) {

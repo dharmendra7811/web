@@ -16,6 +16,8 @@ const server = Fastify({ logger: true });
 // Register CORS
 server.register(cors, {
   origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform'],
 });
 
 // Environment variables (in real app, use .env)
@@ -25,7 +27,7 @@ const DB_NAME = process.env.DB_NAME || 'requirements_os';
 const DB_USER = process.env.DB_USER || 'postgres';
 const DB_PASSWORD = process.env.DB_PASSWORD || 'postgres';
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || 'your-openrouter-key';
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 
 // Initialize PostgreSQL pool
@@ -68,7 +70,7 @@ async function callModel(model, prompt, systemPrompt) {
   // Check if API key is not configured or is the default placeholder
   if (!OPENROUTER_API_KEY || OPENROUTER_API_KEY === 'your-openrouter-key') {
     console.log(`[LLM Mock] Active API key not found. Using high-fidelity mock LLM generation for ${model}...`);
-    
+
     // 1. Feature Extraction Prompt Mock
     if (prompt.includes('Extract all features') || prompt.includes('product analyst. Extract')) {
       // Create a nice set of features based on some keywords in the PRD text, or return defaults
@@ -100,17 +102,17 @@ async function callModel(model, prompt, systemPrompt) {
       ];
       return JSON.stringify({ features });
     }
-    
+
     // 2. Summary Prompt Mock
     if (prompt.includes('Summarize this PRD') || prompt.includes('Summarize this PRD in 2-3 sentences')) {
       return "Requirements OS is an interactive product management utility designed to ingest PRD documents, decompose them into structured high-level features and atomic technical implementation todos, and visualizes them on a dependency graph. It allows managers to describe scope edits using natural English chat, triages the cascading impact of changes, and exposes exports for ticket-management tools like Linear and Jira.";
     }
-    
+
     // 3. Todo Generation Prompt Mock
     if (prompt.includes('breaking down a feature') || prompt.includes('implementation todos')) {
       const titleMatch = prompt.match(/Feature:\s*([^\n]+)/);
       const featureTitle = titleMatch ? titleMatch[1].trim() : 'Feature Domain';
-      
+
       let todos = [];
       if (featureTitle.includes('User Authentication')) {
         todos = [
@@ -220,7 +222,7 @@ async function callModel(model, prompt, systemPrompt) {
       }
       return JSON.stringify({ todos });
     }
-    
+
     // Catch all mock
     return JSON.stringify({});
   }
@@ -242,14 +244,40 @@ async function callModel(model, prompt, systemPrompt) {
 }
 
 
-// Safe JSON parse — strip any accidental markdown fences
+// Safe JSON parse — handles common LLM output issues
 function parseJSON(text) {
+  // Strip markdown fences
+  let clean = text.replace(/```json\s*|```/g, '').trim();
+
+  // If the response has text before/after JSON, try to extract just the JSON object/array
+  const firstBrace = clean.indexOf('{');
+  const firstBracket = clean.indexOf('[');
+  const startIdx = Math.min(
+    firstBrace === -1 ? Infinity : firstBrace,
+    firstBracket === -1 ? Infinity : firstBracket
+  );
+  if (startIdx !== Infinity && startIdx > 0) {
+    clean = clean.slice(startIdx);
+  }
+  // Trim trailing text after last closing brace/bracket
+  const lastBrace = clean.lastIndexOf('}');
+  const lastBracket = clean.lastIndexOf(']');
+  const endIdx = Math.max(lastBrace, lastBracket);
+  if (endIdx !== -1 && endIdx < clean.length - 1) {
+    clean = clean.slice(0, endIdx + 1);
+  }
+
   try {
-    const clean = text.replace(/```json|```/g, '').trim();
     return JSON.parse(clean);
   } catch (e) {
-    console.error('[JSON Parse Error] Failed to parse:', text);
-    throw e;
+    // Try stripping trailing commas (common LLM mistake)
+    try {
+      const noTrailingCommas = clean.replace(/,(\s*[}\]])/g, '$1');
+      return JSON.parse(noTrailingCommas);
+    } catch (e2) {
+      console.error('[JSON Parse Error] Failed to parse. Raw text:', text.slice(0, 500));
+      throw e;
+    }
   }
 }
 
@@ -257,26 +285,26 @@ function parseJSON(text) {
 const featureExtractionWorker = new Worker('feature-extraction', async (job) => {
   const { projectId } = job.data;
   console.log(`[FeatureExtractionWorker] Processing project ${projectId}`);
-  
+
   // Get project from DB
   const projectRes = await query('SELECT * FROM projects WHERE id = $1', [projectId]);
   if (projectRes.rows.length === 0) {
     throw new Error(`Project not found: ${projectId}`);
   }
   const project = projectRes.rows[0];
-  
+
   if (!project.prd_text) {
     console.log(`[FeatureExtractionWorker] No PRD text for project ${projectId}`);
     return;
   }
-  
+
   // Generate summary
   console.log(`[FeatureExtractionWorker] Generating summary for project ${projectId}`);
   const summaryPrompt = `You are a product analyst. Summarize this PRD in 2-3 sentences. Do not include any greeting or conversational filler.\n\nPRD:\n${project.prd_text}`;
-  const summaryText = await callModel('meta-llama/llama-3.1-8b-instruct', summaryPrompt, 'You are a precise technical writer.');
-  
+  const summaryText = await callModel('openrouter/free', summaryPrompt, 'You are a precise technical writer.');
+
   await query('UPDATE projects SET summary = $1 WHERE id = $2', [summaryText.trim(), projectId]);
-  
+
   // Extract features
   console.log(`[FeatureExtractionWorker] Extracting features for project ${projectId}`);
   const featurePrompt = `You are a product analyst. Extract all features from this PRD.
@@ -300,11 +328,11 @@ Return ONLY valid JSON. No preamble, no explanation, no markdown.
 PRD:
 ${project.prd_text}`;
 
-  const featureRaw = await callModel('meta-llama/llama-3.1-8b-instruct', featurePrompt);
+  const featureRaw = await callModel('openrouter/free', featurePrompt);
   const { features } = parseJSON(featureRaw);
-  
+
   console.log(`[FeatureExtractionWorker] Extracted ${features.length} features`);
-  
+
   // Insert features and queue todo generation
   for (let i = 0; i < features.length; i++) {
     const f = features[i];
@@ -325,9 +353,9 @@ ${project.prd_text}`;
         false
       ]
     );
-    
+
     const savedFeature = insertRes.rows[0];
-    
+
     // Add to todo queue
     await todoGenerationQueue.add('generate-todos', {
       projectId,
@@ -344,7 +372,7 @@ ${project.prd_text}`;
 const todoGenerationWorker = new Worker('todo-generation', async (job) => {
   const { projectId, featureId, projectSummary, featureTitle, featureDescription, featureActors } = job.data;
   console.log(`[TodoGenerationWorker] Generating todos for feature "${featureTitle}" (${featureId})`);
-  
+
   const todoPrompt = `You are a senior engineer breaking down a feature into implementation todos.
 
 Project context: ${projectSummary}
@@ -370,11 +398,11 @@ Return ONLY valid JSON. No preamble, no explanation, no markdown.
   ]
 }`;
 
-  const todoRaw = await callModel('meta-llama/llama-3.1-8b-instruct', todoPrompt);
+  const todoRaw = await callModel('openrouter/free', todoPrompt);
   const { todos } = parseJSON(todoRaw);
-  
+
   console.log(`[TodoGenerationWorker] Generated ${todos.length} todos for feature ${featureId}`);
-  
+
   // Insert todos
   const insertedTodos = [];
   for (let i = 0; i < todos.length; i++) {
@@ -397,14 +425,14 @@ Return ONLY valid JSON. No preamble, no explanation, no markdown.
         false
       ]
     );
-    
+
     const savedTodo = insertRes.rows[0];
     insertedTodos.push({
       ...savedTodo,
       depends_on_titles: t.depends_on_titles || []
     });
   }
-  
+
   // Resolve depends_on relationships using Titles
   console.log(`[TodoGenerationWorker] Resolving depends_on relationships for feature ${featureId}`);
   for (const todo of insertedTodos) {
@@ -416,7 +444,7 @@ Return ONLY valid JSON. No preamble, no explanation, no markdown.
           depIds.push(match.id);
         }
       }
-      
+
       if (depIds.length > 0) {
         await query(
           'UPDATE todos SET depends_on = $1 WHERE id = $2',
@@ -425,7 +453,7 @@ Return ONLY valid JSON. No preamble, no explanation, no markdown.
       }
     }
   }
-  
+
   // Update feature status to ready
   console.log(`[TodoGenerationWorker] Marking feature ${featureId} as ready`);
   await query("UPDATE features SET status = 'ready' WHERE id = $1", [featureId]);
@@ -454,14 +482,14 @@ server.get('/health', async (request, reply) => {
 // Project routes
 server.post('/api/projects', async (request, reply) => {
   const { name, prd_text } = request.body;
-  
+
   const result = await query(
     'INSERT INTO projects (name, prd_text) VALUES ($1, $2) RETURNING *',
     [name, prd_text]
   );
-  
+
   const project = result.rows[0];
-  
+
   // Trigger ingestion pipeline
   featureExtractionQueue.add('extract-features', { projectId: project.id }, {
     attempts: 3,
@@ -470,7 +498,7 @@ server.post('/api/projects', async (request, reply) => {
       delay: 1000,
     },
   });
-  
+
   return project;
 });
 
@@ -482,21 +510,21 @@ server.get('/api/projects', async (request, reply) => {
 
 server.get('/api/projects/:id', async (request, reply) => {
   const { id } = request.params;
-  
+
   // Get project with features and todos
   const projectResult = await query('SELECT * FROM projects WHERE id = $1', [id]);
   if (projectResult.rows.length === 0) {
     return reply.code(404).send({ error: 'Project not found' });
   }
-  
+
   const project = projectResult.rows[0];
-  
+
   // Get features
   const featuresResult = await query(
     'SELECT * FROM features WHERE project_id = $1 ORDER BY order_index',
     [id]
   );
-  
+
   // Get todos for each feature
   for (const feature of featuresResult.rows) {
     const todosResult = await query(
@@ -505,18 +533,33 @@ server.get('/api/projects/:id', async (request, reply) => {
     );
     feature.todos = todosResult.rows;
   }
-  
+
   project.features = featuresResult.rows;
-  
+
   return project;
 });
 
 server.delete('/api/projects/:id', async (request, reply) => {
   const { id } = request.params;
-  
-  await query('DELETE FROM projects WHERE id = $1', [id]);
-  
-  return { success: true };
+
+  // Validate UUID format to prevent database 500 errors (which look like CORS errors in browsers)
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(id)) {
+    return reply.code(400).send({ error: 'Invalid project ID format (must be a valid UUID)' });
+  }
+
+  try {
+    const result = await query('DELETE FROM projects WHERE id = $1 RETURNING *', [id]);
+
+    if (result.rows.length === 0) {
+      return reply.code(404).send({ error: 'Project not found' });
+    }
+
+    return { success: true };
+  } catch (error) {
+    request.log.error(error);
+    return reply.code(500).send({ error: 'Failed to delete project' });
+  }
 });
 
 // PRD ingestion
@@ -525,18 +568,18 @@ server.post('/api/projects/:id/prd', async (request, reply) => {
   // For now, we assume prd_text is in the body
   const { id } = request.params;
   const { prd_text } = request.body;
-  
+
   const result = await query(
     'UPDATE projects SET prd_text = $1 WHERE id = $2 RETURNING *',
     [prd_text, id]
   );
-  
+
   if (result.rows.length === 0) {
     return reply.code(404).send({ error: 'Project not found' });
   }
-  
+
   const project = result.rows[0];
-  
+
   // Trigger ingestion pipeline
   featureExtractionQueue.add('extract-features', { projectId: id }, {
     attempts: 3,
@@ -545,45 +588,45 @@ server.post('/api/projects/:id/prd', async (request, reply) => {
       delay: 1000,
     },
   });
-  
+
   return project;
 });
 
 // GET ingestion progress status
 server.get('/api/projects/:id/ingest/status', async (request, reply) => {
   const { id } = request.params;
-  
+
   const projectResult = await query('SELECT * FROM projects WHERE id = $1', [id]);
   if (projectResult.rows.length === 0) {
     return reply.code(404).send({ error: 'Project not found' });
   }
-  
+
   const project = projectResult.rows[0];
-  
+
   // Fetch features to compute status
   const featuresResult = await query('SELECT id, status FROM features WHERE project_id = $1', [id]);
   const features = featuresResult.rows;
-  
+
   if (!project.prd_text) {
     return { status: 'idle', progress: 0, message: 'Waiting for PRD...' };
   }
-  
+
   if (features.length === 0) {
     return { status: 'extracting_features', progress: 20, message: 'Extracting features from PRD...' };
   }
-  
+
   const totalFeatures = features.length;
   const readyFeatures = features.filter(f => f.status === 'ready').length;
-  
+
   if (readyFeatures < totalFeatures) {
     const progress = Math.round(20 + (readyFeatures / totalFeatures) * 70);
-    return { 
-      status: 'generating_todos', 
-      progress, 
-      message: `Generating todos: ${readyFeatures}/${totalFeatures} features ready` 
+    return {
+      status: 'generating_todos',
+      progress,
+      message: `Generating todos: ${readyFeatures}/${totalFeatures} features ready`
     };
   }
-  
+
   return { status: 'done', progress: 100, message: 'Ingestion complete!' };
 });
 
@@ -591,24 +634,24 @@ server.get('/api/projects/:id/ingest/status', async (request, reply) => {
 // Feature routes
 server.get('/api/projects/:id/features', async (request, reply) => {
   const { id } = request.params;
-  
+
   const result = await query(
     'SELECT * FROM features WHERE project_id = $1 ORDER BY order_index',
     [id]
   );
-  
+
   return result.rows;
 });
 
 server.patch('/api/features/:id', async (request, reply) => {
   const { id } = request.params;
   const { title, description, status, order_index, human_locked } = request.body;
-  
+
   // Build dynamic update query
   const fields = [];
   const values = [];
   let paramIndex = 1;
-  
+
   if (title !== undefined) {
     fields.push(`title = $${paramIndex++}`);
     values.push(title);
@@ -629,58 +672,58 @@ server.patch('/api/features/:id', async (request, reply) => {
     fields.push(`human_locked = $${paramIndex++}`);
     values.push(human_locked);
   }
-  
+
   if (fields.length === 0) {
     return reply.code(400).send({ error: 'No fields to update' });
   }
-  
+
   fields.push(`updated_at = NOW()`);
   values.push(id); // for WHERE clause
-  
+
   const queryStr = `
     UPDATE features 
     SET ${fields.join(', ')}
     WHERE id = $${paramIndex}
     RETURNING *
   `;
-  
+
   const result = await query(queryStr, values);
-  
+
   if (result.rows.length === 0) {
     return reply.code(404).send({ error: 'Feature not found' });
   }
-  
+
   return result.rows[0];
 });
 
 server.delete('/api/features/:id', async (request, reply) => {
   const { id } = request.params;
-  
+
   const result = await query('DELETE FROM features WHERE id = $1 RETURNING *', [id]);
-  
+
   if (result.rows.length === 0) {
     return reply.code(404).send({ error: 'Feature not found' });
   }
-  
+
   return { success: true };
 });
 
 // Todo routes
 server.get('/api/features/:id/todos', async (request, reply) => {
   const { id } = request.params;
-  
+
   const result = await query(
     'SELECT * FROM todos WHERE feature_id = $1 ORDER BY order_index',
     [id]
   );
-  
+
   return result.rows;
 });
 
 server.post('/api/features/:id/todos', async (request, reply) => {
   const { id } = request.params;
   const { title, detail, entities, depends_on, status, order_index, human_locked, ticket_id, ticket_adapter } = request.body;
-  
+
   const result = await query(
     `INSERT INTO todos 
       (feature_id, title, detail, entities, depends_on, status, order_index, human_locked, ticket_id, ticket_adapter) 
@@ -700,19 +743,19 @@ server.post('/api/features/:id/todos', async (request, reply) => {
       ticket_adapter
     ]
   );
-  
+
   return result.rows[0];
 });
 
 server.patch('/api/todos/:id', async (request, reply) => {
   const { id } = request.params;
   const { title, detail, status, order_index, human_locked } = request.body;
-  
+
   // Build dynamic update query
   const fields = [];
   const values = [];
   let paramIndex = 1;
-  
+
   if (title !== undefined) {
     fields.push(`title = $${paramIndex++}`);
     values.push(title);
@@ -733,39 +776,39 @@ server.patch('/api/todos/:id', async (request, reply) => {
     fields.push(`human_locked = $${paramIndex++}`);
     values.push(human_locked);
   }
-  
+
   if (fields.length === 0) {
     return reply.code(400).send({ error: 'No fields to update' });
   }
-  
+
   fields.push(`updated_at = NOW()`);
   values.push(id); // for WHERE clause
-  
+
   const queryStr = `
     UPDATE todos 
     SET ${fields.join(', ')}
     WHERE id = $${paramIndex}
     RETURNING *
   `;
-  
+
   const result = await query(queryStr, values);
-  
+
   if (result.rows.length === 0) {
     return reply.code(404).send({ error: 'Todo not found' });
   }
-  
+
   return result.rows[0];
 });
 
 server.delete('/api/todos/:id', async (request, reply) => {
   const { id } = request.params;
-  
+
   const result = await query('DELETE FROM todos WHERE id = $1 RETURNING *', [id]);
-  
+
   if (result.rows.length === 0) {
     return reply.code(404).send({ error: 'Todo not found' });
   }
-  
+
   return { success: true };
 });
 
@@ -773,7 +816,7 @@ server.delete('/api/todos/:id', async (request, reply) => {
 server.post('/api/projects/:id/chat', async (request, reply) => {
   const { id } = request.params;
   const { message, session_id } = request.body;
-  
+
   try {
     // 1. Resolve Session ID
     let sessionId = session_id;
@@ -784,38 +827,38 @@ server.post('/api/projects/:id/chat', async (request, reply) => {
       );
       sessionId = sessionRes.rows[0].id;
     }
-    
+
     // 2. Save User Message
     await query(
       "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, 'user', $2)",
       [sessionId, message]
     );
-    
+
     // 3. Fetch Project Summary
     const projectRes = await query('SELECT summary FROM projects WHERE id = $1', [id]);
     const projectSummary = projectRes.rows[0]?.summary || 'No project summary available.';
-    
+
     // 4. Fetch Existing features and todos to form context
     const featuresRes = await query('SELECT id, title, description FROM features WHERE project_id = $1', [id]);
     const features = featuresRes.rows;
-    
+
     const todosRes = await query('SELECT id, title, detail, feature_id FROM todos WHERE project_id = $1', [id]);
     const todos = todosRes.rows;
-    
+
     const contextStr = features.map(f => {
       const featureTodos = todos.filter(t => t.feature_id === f.id);
-      return `Feature: "${f.title}" (UUID: ${f.id})\nDescription: "${f.description || ''}"\nTodos:\n` + 
+      return `Feature: "${f.title}" (UUID: ${f.id})\nDescription: "${f.description || ''}"\nTodos:\n` +
         featureTodos.map(t => ` - [Todo UUID: ${t.id}] "${t.title}": "${t.detail || ''}"`).join('\n');
     }).join('\n\n');
-    
+
     // 5. Generate Response via LLM (or high-fidelity mock if no API key)
     let assistantResponse = '';
     let suggestions = [];
-    
+
     if (!OPENROUTER_API_KEY || OPENROUTER_API_KEY === 'your-openrouter-key') {
       console.log("[LLM Mock] Chat endpoint executing high-fidelity mock fallback...");
       const userLower = message.toLowerCase();
-      
+
       if (userLower.includes('oauth') || userLower.includes('google') || userLower.includes('login')) {
         assistantResponse = "Integrating Google OAuth requires setting up the client keys in Next.js, implementing session routing in Fastify, and updating the database model to persist oauth tokens. I have drafted 2 technical todos to support this.";
         suggestions = [
@@ -846,7 +889,7 @@ server.post('/api/projects/:id/chat', async (request, reply) => {
         ];
       } else if (userLower.includes('remove') || userLower.includes('delete') || userLower.includes('obsolete')) {
         const targetTodo = todos[0];
-        assistantResponse = targetTodo 
+        assistantResponse = targetTodo
           ? `Removing the obsolete todo "${targetTodo.title}" will simplify the development timeline without breaking any active downstream database or code dependencies. I have drafted a removal card.`
           : "No active todos are currently available to suggest removing.";
         suggestions = targetTodo ? [
@@ -906,18 +949,18 @@ Return ONLY a valid JSON object matching the schema. No markdown fences, no prea
   ]
 }`;
 
-      const chatRaw = await callModel('meta-llama/llama-3.1-8b-instruct', chatPrompt);
+      const chatRaw = await callModel('openrouter/free', chatPrompt);
       const parsed = parseJSON(chatRaw);
       assistantResponse = parsed.assistant_response;
       suggestions = parsed.suggestions || [];
     }
-    
+
     // 6. Save Assistant Response in DB
     await query(
       "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, 'assistant', $2)",
       [sessionId, assistantResponse]
     );
-    
+
     // 7. Store Suggestions in impact_suggestions table
     const savedSuggestions = [];
     for (const sug of suggestions) {
@@ -940,7 +983,7 @@ Return ONLY a valid JSON object matching the schema. No markdown fences, no prea
       );
       savedSuggestions.push(insertRes.rows[0]);
     }
-    
+
     return {
       session_id: sessionId,
       assistant_response: assistantResponse,
@@ -965,25 +1008,25 @@ server.get('/api/projects/:id/suggestions', async (request, reply) => {
 // APPLY suggestion
 server.post('/api/suggestions/:id/apply', async (request, reply) => {
   const { id } = request.params;
-  
+
   try {
     const sugRes = await query('SELECT * FROM impact_suggestions WHERE id = $1', [id]);
     if (sugRes.rows.length === 0) {
       return reply.code(404).send({ error: 'Suggestion not found' });
     }
     const suggestion = sugRes.rows[0];
-    
+
     if (suggestion.status !== 'pending') {
       return reply.code(400).send({ error: 'Suggestion has already been applied or skipped' });
     }
-    
+
     const proposed = suggestion.proposed_value;
-    
+
     if (suggestion.suggestion_type === 'add') {
       // Find order_index
       const countRes = await query('SELECT COUNT(*) FROM todos WHERE feature_id = $1', [proposed.feature_id]);
       const orderIdx = parseInt(countRes.rows[0].count) || 0;
-      
+
       await query(
         `INSERT INTO todos 
           (project_id, feature_id, title, detail, entities, depends_on, status, order_index, human_locked) 
@@ -1016,10 +1059,10 @@ server.post('/api/suggestions/:id/apply', async (request, reply) => {
     } else if (suggestion.suggestion_type === 'remove') {
       await query('DELETE FROM todos WHERE id = $1', [suggestion.target_id]);
     }
-    
+
     // Update suggestion status to applied
     await query("UPDATE impact_suggestions SET status = 'applied' WHERE id = $1", [id]);
-    
+
     return { success: true };
   } catch (err) {
     console.error('[Apply Suggestion Error] Failed to apply:', err);
@@ -1031,23 +1074,23 @@ server.post('/api/suggestions/:id/apply', async (request, reply) => {
 server.post('/api/suggestions/:id/skip', async (request, reply) => {
   const { id } = request.params;
   const { reason } = request.body || {};
-  
+
   try {
     const sugRes = await query('SELECT * FROM impact_suggestions WHERE id = $1', [id]);
     if (sugRes.rows.length === 0) {
       return reply.code(404).send({ error: 'Suggestion not found' });
     }
     const suggestion = sugRes.rows[0];
-    
+
     if (suggestion.status !== 'pending') {
       return reply.code(400).send({ error: 'Suggestion has already been applied or skipped' });
     }
-    
+
     await query(
       "UPDATE impact_suggestions SET status = 'skipped', skip_reason = $1 WHERE id = $2",
       [reason || 'Skipped by user', id]
     );
-    
+
     return { success: true };
   } catch (err) {
     console.error('[Skip Suggestion Error] Failed to skip:', err);
@@ -1059,21 +1102,21 @@ server.post('/api/suggestions/:id/skip', async (request, reply) => {
 // Graph route
 server.get('/api/projects/:id/graph', async (request, reply) => {
   const { id } = request.params;
-  
+
   // Fetch project with features and todos
   const projectResult = await query('SELECT * FROM projects WHERE id = $1', [id]);
   if (projectResult.rows.length === 0) {
     return reply.code(404).send({ error: 'Project not found' });
   }
-  
+
   const project = projectResult.rows[0];
-  
+
   // Get features
   const featuresResult = await query(
     'SELECT * FROM features WHERE project_id = $1 ORDER BY order_index',
     [id]
   );
-  
+
   // Get todos for each feature
   const featuresWithTodos = [];
   for (const feature of featuresResult.rows) {
@@ -1084,11 +1127,11 @@ server.get('/api/projects/:id/graph', async (request, reply) => {
     feature.todos = todosResult.rows;
     featuresWithTodos.push(feature);
   }
-  
+
   // Convert to React Flow format
   const nodes = [];
   const edges = [];
-  
+
   // Add feature nodes
   featuresWithTodos.forEach((feature, index) => {
     nodes.push({
@@ -1103,7 +1146,7 @@ server.get('/api/projects/:id/graph', async (request, reply) => {
         todo_count: feature.todos.length,
       }
     });
-    
+
     // Add todo nodes under this feature
     feature.todos.forEach((todo, todoIndex) => {
       nodes.push({
@@ -1117,7 +1160,7 @@ server.get('/api/projects/:id/graph', async (request, reply) => {
           entity_count: todo.entities.length,
         }
       });
-      
+
       // Add depends_on edges
       todo.depends_on.forEach(depId => {
         edges.push({
@@ -1130,9 +1173,9 @@ server.get('/api/projects/:id/graph', async (request, reply) => {
       });
     });
   });
-  
+
   // TODO: Add same_entity edges (capped at 20)
-  
+
   return { nodes, edges };
 });
 
