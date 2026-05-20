@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from 'react';
-import { getProject } from '@/lib/api';
+import { getIngestStatus } from '@/lib/api';
 
 interface IngestionProgressProps {
   projectId: string;
@@ -13,34 +13,22 @@ export default function IngestionProgress({ projectId }: IngestionProgressProps)
   const [message, setMessage] = useState('');
 
   useEffect(() => {
-    // In a real app, you would subscribe to Supabase Realtime for ingestion progress
-    // For now, we'll simulate by fetching the project and checking if summary exists
     let intervalId: NodeJS.Timeout;
 
     const checkStatus = async () => {
       try {
-        const project = await getProject(projectId);
-        if (project.prd_text) {
-          if (!project.summary) {
-            setStatus('extracting_features');
-            setProgress(30);
-            setMessage('Extracting features...');
-          } else {
-            setStatus('done');
-            setProgress(100);
-            setMessage('Ingestion complete!');
-            if (intervalId) clearInterval(intervalId);
-          }
-        } else {
-          setStatus('idle');
-          setProgress(0);
-          setMessage('Waiting for PRD...');
+        const res = await getIngestStatus(projectId);
+        setStatus(res.status);
+        setProgress(res.progress);
+        setMessage(res.message);
+        
+        if (res.status === 'done' || res.status === 'error' || res.status === 'idle') {
           if (intervalId) clearInterval(intervalId);
         }
       } catch (error) {
         console.error(error);
         setStatus('error');
-        setMessage('Error checking status');
+        setMessage('Error checking ingestion status');
         if (intervalId) clearInterval(intervalId);
       }
     };
@@ -53,6 +41,7 @@ export default function IngestionProgress({ projectId }: IngestionProgressProps)
       if (intervalId) clearInterval(intervalId);
     };
   }, [projectId]);
+
 
   return (
     <div className="border rounded p-4">

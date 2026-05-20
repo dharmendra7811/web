@@ -21,6 +21,14 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
   useEffect(() => {
     loadProject();
+    
+    const handleUpdate = () => {
+      loadProject();
+    };
+    window.addEventListener('prd-updated', handleUpdate);
+    return () => {
+      window.removeEventListener('prd-updated', handleUpdate);
+    };
   }, [id]);
 
   const loadProject = async () => {

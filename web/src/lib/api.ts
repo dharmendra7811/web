@@ -45,6 +45,15 @@ export async function updateProjectPRD(id: string, prdText: string): Promise<Pro
   return res.json();
 }
 
+export async function getIngestStatus(id: string): Promise<{ status: string; progress: number; message: string }> {
+  const res = await fetch(`${API_URL}/api/projects/${id}/ingest/status`);
+  if (!res.ok) {
+    throw new Error('Failed to fetch ingestion status');
+  }
+  return res.json();
+}
+
+
 export async function getFeatures(projectId: string) {
   const res = await fetch(`${API_URL}/api/projects/${projectId}/features`);
   if (!res.ok) {
@@ -144,6 +153,35 @@ export async function getGraphData(projectId: string) {
   }
   return res.json();
 }
+
+export async function getSuggestions(projectId: string) {
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/suggestions`);
+  if (!res.ok) {
+    throw new Error('Failed to fetch suggestions');
+  }
+  return res.json();
+}
+
+export async function applySuggestion(id: string) {
+  const res = await fetch(`${API_URL}/api/suggestions/${id}/apply`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    throw new Error('Failed to apply suggestion');
+  }
+  return res.json();
+}
+
+export async function skipSuggestion(id: string) {
+  const res = await fetch(`${API_URL}/api/suggestions/${id}/skip`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    throw new Error('Failed to skip suggestion');
+  }
+  return res.json();
+}
+
 
 // Types (these should match the backend types)
 export interface Project {

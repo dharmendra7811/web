@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from 'react';
-import { updateFeature, deleteFeature, Feature } from '@/lib/api';
+import { updateFeature, deleteFeature, Feature, getTodos } from '@/lib/api';
 import TodoItem from '@/app/components/features/TodoItem';
 
 interface FeatureCardProps {
@@ -20,7 +20,7 @@ export default function FeatureCard({ feature }: FeatureCardProps) {
   const loadTodos = async () => {
     setLoadingTodos(true);
     try {
-      const data = await fetchTodos(feature.id);
+      const data = await getTodos(feature.id);
       setTodos(data);
     } catch (error) {
       console.error(error);
@@ -29,14 +29,6 @@ export default function FeatureCard({ feature }: FeatureCardProps) {
     }
   };
 
-  // Fetch todos from API
-  const fetchTodos = async (featureId: string) => {
-    const res = await fetch(`/api/features/${featureId}/todos`);
-    if (!res.ok) {
-      throw new Error('Failed to fetch todos');
-    }
-    return res.json();
-  };
 
   // Handle feature update
   const handleUpdate = async () => {

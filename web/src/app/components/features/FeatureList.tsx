@@ -14,6 +14,14 @@ export default function FeatureList({ projectId }: FeatureListProps) {
 
   useEffect(() => {
     loadFeatures();
+    
+    const handleUpdate = () => {
+      loadFeatures();
+    };
+    window.addEventListener('prd-updated', handleUpdate);
+    return () => {
+      window.removeEventListener('prd-updated', handleUpdate);
+    };
   }, [projectId]);
 
   const loadFeatures = async () => {
