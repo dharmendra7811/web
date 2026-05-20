@@ -1161,6 +1161,17 @@ server.get('/api/projects/:id/graph', async (request, reply) => {
         }
       });
 
+      // Add parent-child edge from Feature to the FIRST Todo child node only
+      if (todoIndex === 0) {
+        edges.push({
+          id: `${feature.id}-contains-${todo.id}`,
+          source: feature.id,
+          target: todo.id,
+          style: { stroke: '#818cf8', strokeWidth: 1.5, strokeDasharray: '4,4' },
+          animated: false,
+        });
+      }
+
       // Add depends_on edges
       todo.depends_on.forEach(depId => {
         edges.push({
