@@ -1163,11 +1163,11 @@ Suggestion format:
     "title": "String",
     "detail": "String",
     "entities": ["array", "of", "strings"],
-    "feature_id": "uuid string of the feature this belongs to (required for 'add')"
+    "feature_id": "uuid string (MANDATORY for 'add' — must be one of the Feature UUIDs listed above)"
   } // null if suggestion_type is "remove"
 }
 
-Remember to map any "add" suggestions to the most relevant existing feature_id. If no exact match exists, pick the closest one.
+CRITICAL: Every "add" suggestion MUST include a valid feature_id from the existing features listed above. Never omit feature_id. Never invent a UUID. Pick the most relevant existing feature. If unsure which feature to use, pick the first one.
 Return ONLY valid JSON.`;
 
     const chatRaw = await callModel('openai/gpt-oss-120b', chatPrompt);
@@ -1229,6 +1229,7 @@ server.get('/api/projects/:id/suggestions', async (request, reply) => {
 // APPLY suggestion
 server.post('/api/suggestions/:id/apply', async (request, reply) => {
   const { id } = request.params;
+  const { feature_id: overrideFeatureId } = request.body || {};
 
   try {
     const sugRes = await query('SELECT * FROM impact_suggestions WHERE id = $1', [id]);
@@ -1241,30 +1242,58 @@ server.post('/api/suggestions/:id/apply', async (request, reply) => {
       return reply.code(400).send({ error: 'Suggestion has already been applied or skipped' });
     }
 
-    const proposed = suggestion.proposed_value;
+    const proposed = { ...suggestion.proposed_value };
+    if (overrideFeatureId) proposed.feature_id = overrideFeatureId;
 
     if (suggestion.suggestion_type === 'add') {
-      // Find order_index
-      const countRes = await query('SELECT COUNT(*) FROM todos WHERE feature_id = $1', [proposed.feature_id]);
-      const orderIdx = parseInt(countRes.rows[0].count) || 0;
+      // Require a valid feature_id for add suggestions. If missing or invalid, reject.
+      // This ensures tasks are always placed under an existing feature.
+      const featureId = proposed.feature_id;
 
-      await query(
-        `INSERT INTO todos 
-          (project_id, feature_id, title, detail, entities, depends_on, status, order_index, human_locked) 
-        VALUES 
-          ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [
-          suggestion.project_id,
-          proposed.feature_id,
-          proposed.title,
-          proposed.detail || '',
-          (proposed.entities || []).map(e => e.toLowerCase()),
-          [], // depends_on initially empty
-          'open',
-          orderIdx,
-          true // human_locked
-        ]
-      );
+      if (!featureId) {
+        return reply.code(400).send({
+          error: 'feature_id is required for add suggestions. Please specify which feature this task belongs to.'
+        });
+      }
+
+      const featCheck = await query('SELECT id FROM features WHERE id = $1', [featureId]);
+      if (featCheck.rows.length === 0) {
+        return reply.code(400).send({
+          error: `Feature with id "${featureId}" not found. Please use an existing feature_id.`
+        });
+      }
+
+      // Wrap in a transaction so partial state doesn't persist on failure.
+      await query('BEGIN');
+      try {
+
+        // Find order_index for the new todo under the resolved feature
+        const countRes = await query('SELECT COUNT(*) FROM todos WHERE feature_id = $1', [featureId]);
+        const orderIdx = parseInt(countRes.rows[0].count) || 0;
+
+        await query(
+          `INSERT INTO todos 
+            (project_id, feature_id, title, detail, entities, depends_on, status, order_index, human_locked) 
+          VALUES 
+            ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [
+            suggestion.project_id,
+            featureId,
+            proposed.title,
+            proposed.detail || '',
+            (proposed.entities || []).map(e => e.toLowerCase()),
+            [], // depends_on initially empty
+            'open',
+            orderIdx,
+            true // human_locked
+          ]
+        );
+
+        await query('COMMIT');
+      } catch (txErr) {
+        await query('ROLLBACK');
+        throw txErr;
+      }
     } else if (suggestion.suggestion_type === 'modify') {
       await query(
         `UPDATE todos 

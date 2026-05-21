@@ -206,12 +206,15 @@ export async function getSuggestions(projectId: string) {
   return res.json();
 }
 
-export async function applySuggestion(id: string) {
+export async function applySuggestion(id: string, featureId?: string) {
   const res = await fetch(`${API_URL}/api/suggestions/${id}/apply`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(featureId ? { feature_id: featureId } : {}),
   });
   if (!res.ok) {
-    throw new Error('Failed to apply suggestion');
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to apply suggestion');
   }
   return res.json();
 }

@@ -8,7 +8,8 @@ import {
   getChatHistory, 
   getChatSessions, 
   createChatSession, 
-  getChatSessionHistory 
+  getChatSessionHistory,
+  getFeatures
 } from '@/lib/api';
 
 interface ChatPanelProps {
@@ -51,6 +52,10 @@ export default function ChatPanel({ projectId, theme = 'dark' }: ChatPanelProps)
   
   // Interactive expanded suggestion details state
   const [expandedSuggestions, setExpandedSuggestions] = useState<Record<string, boolean>>({});
+  
+  // Features for feature_id selector on suggestions that lack it
+  const [features, setFeatures] = useState<{ id: string; title: string }[]>([]);
+  const [selectedFeatureIds, setSelectedFeatureIds] = useState<Record<string, string>>({});
   
   // Sessions management
   const [sessions, setSessions] = useState<any[]>([]);
@@ -116,6 +121,11 @@ export default function ChatPanel({ projectId, theme = 'dark' }: ChatPanelProps)
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Fetch features for feature_id selector
+  useEffect(() => {
+    getFeatures(projectId).then(setFeatures).catch(() => setFeatures([]));
+  }, [projectId]);
 
   // Create a new chat session
   const handleNewChat = async () => {
@@ -195,10 +205,10 @@ export default function ChatPanel({ projectId, theme = 'dark' }: ChatPanelProps)
     executeCommand(commandText);
   };
 
-  const handleApply = async (messageId: string, suggestionId: string) => {
+  const handleApply = async (messageId: string, suggestionId: string, featureId?: string) => {
     setProcessingSuggestions(prev => ({ ...prev, [suggestionId]: true }));
     try {
-      await applySuggestion(suggestionId);
+      await applySuggestion(suggestionId, featureId);
       
       setMessages(prev => prev.map(msg => {
         if (msg.id === messageId && msg.suggestions) {
@@ -214,9 +224,9 @@ export default function ChatPanel({ projectId, theme = 'dark' }: ChatPanelProps)
 
       // Trigger hot reload on explorer list and visual graph views
       window.dispatchEvent(new Event('prd-updated'));
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to apply suggestion:', error);
-      alert('Failed to apply suggestion');
+      alert(error.message || 'Failed to apply suggestion');
     } finally {
       setProcessingSuggestions(prev => ({ ...prev, [suggestionId]: false }));
     }
@@ -485,6 +495,31 @@ export default function ChatPanel({ projectId, theme = 'dark' }: ChatPanelProps)
                           </div>
                         )}
 
+                        {/* Feature selector for ALL add suggestions — LLM may hallucinate UUIDs */}
+                        {sug.suggestion_type === 'add' && (
+                          <div className="mb-3">
+                            <label className={`text-[9px] font-bold uppercase tracking-wide block mb-1.5 ${
+                              theme === 'dark' ? 'text-amber-400' : 'text-amber-700'
+                            }`}>
+                              Feature:
+                            </label>
+                            <select
+                              value={selectedFeatureIds[sug.id] !== undefined ? selectedFeatureIds[sug.id] : (sug.proposed_value?.feature_id || '')}
+                              onChange={(e) => setSelectedFeatureIds(prev => ({ ...prev, [sug.id]: e.target.value }))}
+                              className={`w-full text-[10px] px-2.5 py-1.5 rounded-xl border font-medium ${
+                                theme === 'dark'
+                                  ? 'bg-slate-950 border-slate-750 text-slate-200'
+                                  : 'bg-white border-slate-300 text-slate-700'
+                              }`}
+                            >
+                              <option value="">-- choose --</option>
+                              {features.map(f => (
+                                <option key={f.id} value={f.id}>{f.title}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
                         {/* Action buttons */}
                         <div className="flex justify-end gap-2 text-[10px] pt-1">
                           {sug.status === 'pending' ? (
@@ -501,8 +536,8 @@ export default function ChatPanel({ projectId, theme = 'dark' }: ChatPanelProps)
                                 Skip
                               </button>
                               <button
-                                disabled={processingSuggestions[sug.id]}
-                                onClick={() => handleApply(msg.id, sug.id)}
+                                disabled={processingSuggestions[sug.id] || (sug.suggestion_type === 'add' && !selectedFeatureIds[sug.id] && !sug.proposed_value?.feature_id)}
+                                onClick={() => handleApply(msg.id, sug.id, selectedFeatureIds[sug.id])}
                                 className="px-3.5 py-1.5 rounded-xl bg-indigo-600 text-white font-bold hover:bg-indigo-500 transition flex items-center gap-1.5 active:bg-indigo-700 active:scale-95 duration-150 cursor-pointer"
                               >
                                 {processingSuggestions[sug.id] ? (
