@@ -10,6 +10,8 @@ interface UploadZoneProps {
   theme?: 'light' | 'dark';
 }
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+
 export default function UploadZone({ 
   projectId, 
   onPRDChange, 
@@ -19,15 +21,54 @@ export default function UploadZone({
 }: UploadZoneProps) {
   const [file, setFile] = useState<File | null>(null);
   const [prdText, setPrdText] = useState('');
+  const [parsing, setParsing] = useState(false);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
-    if (selectedFile) {
-      setFile(selectedFile);
-      const simText = `PRD content from ${selectedFile.name}\n\n[Parsed Feature Specifications and Objectives]`;
-      setPrdText(simText);
-      onPRDChange(simText);
+    if (!selectedFile) return;
+    setFile(selectedFile);
+    setParsing(true);
+
+    try {
+      const ext = selectedFile.name.split('.').pop()?.toLowerCase();
+
+      if (ext === 'txt' || ext === 'md') {
+        // Client-side FileReader for plaintext files
+        const text = await readFileAsText(selectedFile);
+        setPrdText(text);
+        onPRDChange(text);
+      } else if (ext === 'pdf' || ext === 'docx') {
+        // Send to backend for parsing
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+        const res = await fetch(`${API_URL}/api/parse`, {
+          method: 'POST',
+          body: formData,
+        });
+        if (!res.ok) throw new Error(`Parse failed: ${res.status}`);
+        const { text } = await res.json();
+        setPrdText(text);
+        onPRDChange(text);
+      } else {
+        setPrdText(`Unsupported file type: .${ext}`);
+        onPRDChange(`Unsupported file type: .${ext}`);
+      }
+    } catch (err: any) {
+      console.error('File parse error:', err);
+      setPrdText(`Error parsing file: ${err.message}`);
+      onPRDChange(`Error parsing file: ${err.message}`);
+    } finally {
+      setParsing(false);
     }
+  };
+
+  const readFileAsText = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.readAsText(file);
+    });
   };
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -55,30 +96,41 @@ export default function UploadZone({
             accept=".pdf,.docx,.md,.txt"
             onChange={handleFileChange}
             className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-            disabled={editing}
+            disabled={editing || parsing}
           />
           <div className={`border border-dashed rounded-xl p-4 text-center transition-all ${
-            editing ? 'opacity-50 cursor-not-allowed' : ''
+            editing || parsing ? 'opacity-50 cursor-not-allowed' : ''
           } ${
             theme === 'dark' 
               ? 'border-slate-800 bg-slate-950/20 group-hover:bg-slate-950/50 group-hover:border-slate-700/80' 
               : 'border-slate-300 bg-slate-50 group-hover:bg-slate-100/80 group-hover:border-slate-400'
           }`}>
-            <svg className={`w-8 h-8 mx-auto mb-2 opacity-80 group-hover:scale-110 transition-transform duration-200 ${
-              theme === 'dark' ? 'text-indigo-400' : 'text-indigo-650'
-            }`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-            </svg>
-            <span className={`text-xs font-bold block ${
-              theme === 'dark' ? 'text-slate-350' : 'text-slate-700'
-            }`}>
-              {file ? `Selected: ${file.name}` : "Drag and drop or click to choose file"}
-            </span>
-            <span className={`text-[10px] mt-1 block ${
-              theme === 'dark' ? 'text-slate-500' : 'text-slate-450'
-            }`}>
-              Supported up to 20MB
-            </span>
+            {parsing ? (
+              <div className="flex items-center justify-center gap-2">
+                <span className="animate-spin rounded-full h-4 w-4 border-2 border-indigo-500 border-t-transparent"></span>
+                <span className={`text-xs ${
+                  theme === 'dark' ? 'text-slate-300' : 'text-slate-600'
+                }`}>Parsing {file?.name}...</span>
+              </div>
+            ) : (
+              <>
+                <svg className={`w-8 h-8 mx-auto mb-2 opacity-80 group-hover:scale-110 transition-transform duration-200 ${
+                  theme === 'dark' ? 'text-indigo-400' : 'text-indigo-650'
+                }`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+                <span className={`text-xs font-bold block ${
+                  theme === 'dark' ? 'text-slate-350' : 'text-slate-700'
+                }`}>
+                  {file ? `Selected: ${file.name}` : "Drag and drop or click to choose file"}
+                </span>
+                <span className={`text-[10px] mt-1 block ${
+                  theme === 'dark' ? 'text-slate-500' : 'text-slate-450'
+                }`}>
+                  Supported up to 20MB
+                </span>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -110,7 +162,7 @@ export default function UploadZone({
       <div className="flex justify-end pt-1">
         <button
           type="submit"
-          disabled={editing || !prdText.trim()}
+          disabled={editing || parsing || !prdText.trim()}
           className={`flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-bold text-xs py-2.5 px-5 rounded-xl shadow-lg transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer ${
             theme === 'dark'
               ? 'shadow-indigo-600/10 hover:shadow-indigo-500/20 active:shadow-indigo-750/30 transform hover:-translate-y-0.5 active:translate-y-0'

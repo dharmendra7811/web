@@ -20,6 +20,11 @@ server.register(cors, {
   allowedHeaders: ['Content-Type', 'Authorization', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform'],
 });
 
+// Register multipart for file uploads
+server.register(require('@fastify/multipart'), {
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
+});
+
 // Environment variables (in real app, use .env)
 const DB_HOST = process.env.DB_HOST || 'localhost';
 const DB_PORT = process.env.DB_PORT || 5432;
@@ -301,7 +306,7 @@ const featureExtractionWorker = new Worker('feature-extraction', async (job) => 
   // Generate summary
   console.log(`[FeatureExtractionWorker] Generating summary for project ${projectId}`);
   const summaryPrompt = `You are a product analyst. Summarize this PRD in 2-3 sentences. Do not include any greeting or conversational filler.\n\nPRD:\n${project.prd_text}`;
-  const summaryText = await callModel('openrouter/free', summaryPrompt, 'You are a precise technical writer.');
+  const summaryText = await callModel('openai/gpt-oss-120b', summaryPrompt, 'You are a precise technical writer.');
 
   await query('UPDATE projects SET summary = $1 WHERE id = $2', [summaryText.trim(), projectId]);
 
@@ -311,6 +316,7 @@ const featureExtractionWorker = new Worker('feature-extraction', async (job) => 
 
 A feature is a distinct user-facing capability or system module.
 Aim for 5-15 features depending on PRD size.
+Entities must be lowercase, singular domain nouns (e.g. "order", "restaurant", "payment"). Never use UI component names or endpoint names.
 
 Return ONLY valid JSON. No preamble, no explanation, no markdown.
 
@@ -320,7 +326,7 @@ Return ONLY valid JSON. No preamble, no explanation, no markdown.
       "title": "short feature name",
       "description": "what the system must do — 1-2 sentences",
       "actors": ["who uses this — e.g. guest, admin, system"],
-      "entities": ["key nouns involved — e.g. event, ticket, payment"]
+      "entities": ["key nouns involved — lowercase, singular domain nouns only. e.g. event, ticket, payment. NOT ui component names or endpoint names."]
     }
   ]
 }
@@ -328,7 +334,7 @@ Return ONLY valid JSON. No preamble, no explanation, no markdown.
 PRD:
 ${project.prd_text}`;
 
-  const featureRaw = await callModel('openrouter/free', featurePrompt);
+  const featureRaw = await callModel('openai/gpt-oss-120b', featurePrompt);
   const { features } = parseJSON(featureRaw);
 
   console.log(`[FeatureExtractionWorker] Extracted ${features.length} features`);
@@ -347,7 +353,7 @@ ${project.prd_text}`;
         f.title,
         f.description,
         f.actors || [],
-        f.entities || [],
+        (f.entities || []).map(e => e.toLowerCase()),
         'draft',
         i,
         false
@@ -392,13 +398,13 @@ Return ONLY valid JSON. No preamble, no explanation, no markdown.
     {
       "title": "short action-oriented title",
       "detail": "what needs to be done — acceptance criteria if possible",
-      "entities": ["nouns this todo involves — must overlap with feature entities"],
+      "entities": ["nouns this todo involves — must overlap with feature entities. lowercase, singular domain nouns only."],
       "depends_on_titles": ["title of todo this blocks on — use exact titles"]
     }
   ]
 }`;
 
-  const todoRaw = await callModel('openrouter/free', todoPrompt);
+  const todoRaw = await callModel('openai/gpt-oss-120b', todoPrompt);
   const { todos } = parseJSON(todoRaw);
 
   console.log(`[TodoGenerationWorker] Generated ${todos.length} todos for feature ${featureId}`);
@@ -418,7 +424,7 @@ Return ONLY valid JSON. No preamble, no explanation, no markdown.
         featureId,
         t.title,
         t.detail,
-        t.entities || [],
+        (t.entities || []).map(e => e.toLowerCase()),
         [], // depends_on initially empty, resolved next
         'open',
         i,
@@ -560,6 +566,38 @@ server.delete('/api/projects/:id', async (request, reply) => {
     request.log.error(error);
     return reply.code(500).send({ error: 'Failed to delete project' });
   }
+});
+
+// File parse endpoint — accepts .pdf, .docx, .md, .txt and returns plaintext
+server.post('/api/parse', async (request, reply) => {
+  const data = await request.file();
+  if (!data) {
+    return reply.code(400).send({ error: 'No file uploaded' });
+  }
+
+  const buffer = await data.toBuffer();
+  const filename = data.filename || '';
+  const ext = filename.split('.').pop()?.toLowerCase();
+
+  let text;
+  try {
+    if (ext === 'pdf') {
+      const parsed = await pdfParse(buffer);
+      text = parsed.text;
+    } else if (ext === 'docx') {
+      const { value } = await extractRawText({ buffer });
+      text = value;
+    } else if (ext === 'md' || ext === 'txt') {
+      text = buffer.toString('utf-8');
+    } else {
+      return reply.code(400).send({ error: `Unsupported file type: .${ext}` });
+    }
+  } catch (err) {
+    console.error('[Parse Error]', err);
+    return reply.code(500).send({ error: 'Failed to parse file: ' + err.message });
+  }
+
+  return { text, filename };
 });
 
 // PRD ingestion
@@ -734,7 +772,7 @@ server.post('/api/features/:id/todos', async (request, reply) => {
       id,
       title,
       detail,
-      entities,
+      (entities || []).map(e => e.toLowerCase()),
       depends_on,
       status || 'open',
       order_index || 0,
@@ -949,7 +987,7 @@ Return ONLY a valid JSON object matching the schema. No markdown fences, no prea
   ]
 }`;
 
-      const chatRaw = await callModel('openrouter/free', chatPrompt);
+      const chatRaw = await callModel('openai/gpt-oss-120b', chatPrompt);
       const parsed = parseJSON(chatRaw);
       assistantResponse = parsed.assistant_response;
       suggestions = parsed.suggestions || [];
@@ -1037,7 +1075,7 @@ server.post('/api/suggestions/:id/apply', async (request, reply) => {
           proposed.feature_id,
           proposed.title,
           proposed.detail || '',
-          proposed.entities || [],
+          (proposed.entities || []).map(e => e.toLowerCase()),
           [], // depends_on initially empty
           'open',
           orderIdx,
@@ -1052,7 +1090,7 @@ server.post('/api/suggestions/:id/apply', async (request, reply) => {
         [
           proposed.title,
           proposed.detail || '',
-          proposed.entities || [],
+          (proposed.entities || []).map(e => e.toLowerCase()),
           suggestion.target_id
         ]
       );
