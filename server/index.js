@@ -312,21 +312,37 @@ const featureExtractionWorker = new Worker('feature-extraction', async (job) => 
 
   // Extract features
   console.log(`[FeatureExtractionWorker] Extracting features for project ${projectId}`);
-  const featurePrompt = `You are a product analyst. Extract all features from this PRD.
+  const featurePrompt = `You are a product analyst extracting a formal Semantic IR from a PRD.
 
-A feature is a distinct user-facing capability or system module.
-Aim for 5-15 features depending on PRD size.
-Entities must be lowercase, singular domain nouns (e.g. "order", "restaurant", "payment"). Never use UI component names or endpoint names.
+Each feature must include:
+- title: short system capability name (e.g. AUTH_LOGIN, PAYMENT_CHECKOUT)
+- description: what the system must do — 1-2 sentences
+- actors: who uses this
+- entities: lowercase, singular domain nouns only — NOT UI component names or endpoint names
+- constraints: hidden requirements inferred from PRD text (e.g. "rate_limited", "otp_required", "pci_compliant", "audit_logged"). Empty array if none found.
+- external_deps: external systems/services this depends on (e.g. "stripe", "sendgrid", "google_maps"). Empty array if none.
+- confidence: number 0-1 — how certain you are this feature is genuinely required by the PRD (0.9+ for explicit mentions, 0.5-0.8 for strong inference, below 0.5 for guesswork)
+- source: "explicit" if the feature is directly stated in the PRD text. "inferred" if you deduced it from context.
+- graph_type: classify the feature into one of:
+    "capability" — user-facing business capability (e.g. AUTH_LOGIN, PAYMENT_CHECKOUT, SEARCH_RESTAURANTS)
+    "service" — backend/internal service module (e.g. NOTIFICATION_DISPATCHER, PAYMENT_GATEWAY_ADAPTER)
+    "risk" — compliance, security, or operational risk concern (e.g. PCI_COMPLIANCE, RATE_LIMITER, AUDIT_LOGGER)
+  If a feature fits multiple, pick the most specific. Prefer "risk" only when the feature IS primarily a risk concern, not just a feature that happens to have constraints.
 
 Return ONLY valid JSON. No preamble, no explanation, no markdown.
 
 {
   "features": [
     {
-      "title": "short feature name",
-      "description": "what the system must do — 1-2 sentences",
-      "actors": ["who uses this — e.g. guest, admin, system"],
-      "entities": ["key nouns involved — lowercase, singular domain nouns only. e.g. event, ticket, payment. NOT ui component names or endpoint names."]
+      "title": "AUTH_LOGIN",
+      "description": "Allow users to log in via email OTP or Google OAuth",
+      "actors": ["user"],
+      "entities": ["user", "session", "otp"],
+      "constraints": ["otp_required", "rate_limited"],
+      "external_deps": ["google_oauth", "twilio"],
+      "confidence": 0.95,
+      "source": "explicit",
+      "graph_type": "capability"
     }
   ]
 }
@@ -344,9 +360,9 @@ ${project.prd_text}`;
     const f = features[i];
     const insertRes = await query(
       `INSERT INTO features 
-        (project_id, title, description, actors, entities, status, order_index, human_locked) 
+        (project_id, title, description, actors, entities, status, order_index, human_locked, constraints, external_deps, confidence, source, graph_type) 
       VALUES 
-        ($1, $2, $3, $4, $5, $6, $7, $8) 
+        ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
       RETURNING *`,
       [
         projectId,
@@ -356,7 +372,12 @@ ${project.prd_text}`;
         (f.entities || []).map(e => e.toLowerCase()),
         'draft',
         i,
-        false
+        false,
+        (f.constraints || []).map(e => e.toLowerCase()),
+        (f.external_deps || []).map(e => e.toLowerCase()),
+        typeof f.confidence === 'number' ? f.confidence : 0.5,
+        f.source || 'inferred',
+        f.graph_type || 'capability'
       ]
     );
 
@@ -379,7 +400,7 @@ const todoGenerationWorker = new Worker('todo-generation', async (job) => {
   const { projectId, featureId, projectSummary, featureTitle, featureDescription, featureActors } = job.data;
   console.log(`[TodoGenerationWorker] Generating todos for feature "${featureTitle}" (${featureId})`);
 
-  const todoPrompt = `You are a senior engineer breaking down a feature into implementation todos.
+  const todoPrompt = `You are a senior engineer preparing developer assignment specs from a feature breakdown.
 
 Project context: ${projectSummary}
 
@@ -387,19 +408,30 @@ Feature: ${featureTitle}
 Description: ${featureDescription}
 Actors: ${featureActors ? featureActors.join(', ') : ''}
 
-Generate concrete implementation todos. Each todo is one unit of work
-a developer can pick up and complete independently.
-Include frontend, backend, and any infra todos needed.
+Generate COMPLETE developer assignments. Each todo is a self-contained unit of work a developer can own end-to-end — a service, module, schema, endpoint, or integration. Write acceptance criteria in the detail field so the developer knows exactly what "done" means.
+
+Rules:
+- Each todo must be substantial — at least a day of work, not a 5-minute fix
+- Use CAPITALIZED_UNDERSCORE names (OTP_PROVIDER, PAYMENT_GATEWAY_ADAPTER, USER_SEARCH_SERVICE)
+- Do NOT generate: "add validation hook", "write unit test", "fix lint error", "run npm install"
+- Cover all layers: data model, backend service, frontend component, infra config
+- Include dependencies so a developer knows what to build first
+
+Classify each assignment into a graph layer:
+  "service" — backend service, primary API endpoint, or database schema
+  "infra" — middleware, auth, external adapter, deployment config
+  "execution" — frontend component, data migration, integration work
 
 Return ONLY valid JSON. No preamble, no explanation, no markdown.
 
 {
   "todos": [
     {
-      "title": "short action-oriented title",
-      "detail": "what needs to be done — acceptance criteria if possible",
-      "entities": ["nouns this todo involves — must overlap with feature entities. lowercase, singular domain nouns only."],
-      "depends_on_titles": ["title of todo this blocks on — use exact titles"]
+      "title": "USER_AUTH_SERVICE",
+      "detail": "Build the authentication microservice. Handle signup/login via email OTP and Google OAuth. Store user sessions in Redis. Expose POST /auth/signup, POST /auth/login, POST /auth/verify-otp. Rate-limit OTP requests to 3 per minute per IP. Return JWT on success.",
+      "entities": ["user", "session", "otp"],
+      "depends_on_titles": ["USER_SCHEMA"],
+      "graph_type": "service"
     }
   ]
 }`;
@@ -415,9 +447,9 @@ Return ONLY valid JSON. No preamble, no explanation, no markdown.
     const t = todos[i];
     const insertRes = await query(
       `INSERT INTO todos 
-        (project_id, feature_id, title, detail, entities, depends_on, status, order_index, human_locked) 
+        (project_id, feature_id, title, detail, entities, depends_on, status, order_index, human_locked, graph_type) 
       VALUES 
-        ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
+        ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
       RETURNING *`,
       [
         projectId,
@@ -428,7 +460,8 @@ Return ONLY valid JSON. No preamble, no explanation, no markdown.
         [], // depends_on initially empty, resolved next
         'open',
         i,
-        false
+        false,
+        t.graph_type || 'service'
       ]
     );
 
@@ -600,6 +633,111 @@ server.post('/api/parse', async (request, reply) => {
   return { text, filename };
 });
 
+// AI PRD Review — analyzes PRD and returns clarifying questions
+server.post('/api/projects/:id/review', async (request, reply) => {
+  const { id } = request.params;
+
+  const projectRes = await query('SELECT * FROM projects WHERE id = $1', [id]);
+  if (projectRes.rows.length === 0) {
+    return reply.code(404).send({ error: 'Project not found' });
+  }
+  const project = projectRes.rows[0];
+
+  if (!project.prd_text) {
+    return reply.code(400).send({ error: 'No PRD text to review' });
+  }
+
+  const reviewPrompt = `You are a Senior Solutions Architect reviewing a PRD for technical completeness.
+
+First, map out all the distinct business modules in this PRD (e.g., Auth, Checkout, Catalog, User Profile). You MUST distribute your questions evenly across these modules. Do not fixate on one single area.
+
+Analyze the PRD to find missing specifications that block implementation. For each question, assign a severity level:
+- "critical": Blocks database schema design or core business logic (e.g., "Can one user hold multiple tickets for the same slot?", "How are partial refunds handled?").
+- "moderate": Important edge cases and workflows (e.g., "What happens to a ticket if an event is rescheduled?").
+- "minor": Technical minutiae and exact numbers (e.g., "What is the exact OTP retry limit?").
+
+Rules:
+- It is NOT compulsory to ask questions. If a module is perfectly clear, ask ZERO questions about it.
+- Only ask questions if there is a GENUINE technical blocker. Do not invent questions just to fill space.
+- If the entire PRD is perfectly defined, return an empty questions array: [].
+- If you do ask questions, distribute them evenly. Do not ask more than 2-3 questions about any single module.
+- Ensure EVERY question has an "options" array containing 3-4 plausible answer choices.
+- Return ONLY valid JSON. No preamble.
+
+{
+  "summary": "Technical assessment of PRD completeness",
+  "questions": [
+    {
+      "module": "Checkout",
+      "severity": "critical",
+      "question": "If a multi-day event is partially cancelled, how are refunds calculated?",
+      "context": "The PRD mentions cancellations but not partial refunds.",
+      "options": [
+        "Full refund automatically",
+        "Prorated refund per day",
+        "Manual support ticket required"
+      ]
+    }
+  ]
+}
+
+PRD:
+${project.prd_text}`;
+
+  try {
+    const raw = await callModel('openai/gpt-oss-120b', reviewPrompt);
+    const review = parseJSON(raw);
+
+    await query(
+      "UPDATE projects SET review_state = 'reviewing', review_questions = $1 WHERE id = $2",
+      [JSON.stringify(review.questions), id]
+    );
+
+    return { review_state: 'reviewing', ...review };
+  } catch (err) {
+    console.error('[Review Error]', err);
+    return reply.code(500).send({ error: 'Review failed: ' + err.message });
+  }
+});
+
+// AI PRD Clarify — accepts answers, enriches PRD, runs full extraction
+server.post('/api/projects/:id/clarify', async (request, reply) => {
+  const { id } = request.params;
+  const { answers } = request.body; // [{ question: "...", answer: "..." }]
+
+  if (!answers || !answers.length) {
+    return reply.code(400).send({ error: 'Answers required' });
+  }
+
+  const projectRes = await query('SELECT * FROM projects WHERE id = $1', [id]);
+  if (projectRes.rows.length === 0) {
+    return reply.code(404).send({ error: 'Project not found' });
+  }
+  const project = projectRes.rows[0];
+
+  // Build Q&A text to append to PRD
+  const qaText = answers
+    .map(a => `Q: ${a.question}\nA: ${a.answer}`)
+    .join('\n\n');
+
+  // Enrich the PRD with answers
+  const enrichedPRD = `${project.prd_text}\n\n--- Clarifications from review ---\n${qaText}`;
+
+  // Save answers and update PRD
+  await query(
+    "UPDATE projects SET review_state = 'answered', review_answers = $1, prd_text = $2 WHERE id = $3",
+    [JSON.stringify(answers), enrichedPRD, id]
+  );
+
+  // Trigger ingestion pipeline with enriched PRD
+  await featureExtractionQueue.add('extract-features', { projectId: id }, {
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 1000 },
+  });
+
+  return { review_state: 'answered', message: 'Clarifications applied. Ingestion started.' };
+});
+
 // PRD ingestion
 server.post('/api/projects/:id/prd', async (request, reply) => {
   // In a real app, handle file upload here
@@ -618,14 +756,8 @@ server.post('/api/projects/:id/prd', async (request, reply) => {
 
   const project = result.rows[0];
 
-  // Trigger ingestion pipeline
-  featureExtractionQueue.add('extract-features', { projectId: id }, {
-    attempts: 3,
-    backoff: {
-      type: 'exponential',
-      delay: 1000,
-    },
-  });
+  // Pipeline trigger moved to POST /api/projects/:id/clarify
+  // We no longer trigger extraction immediately on PRD update
 
   return project;
 });
@@ -1170,18 +1302,31 @@ server.get('/api/projects/:id/graph', async (request, reply) => {
   const nodes = [];
   const edges = [];
 
-  // Add feature nodes
-  featuresWithTodos.forEach((feature, index) => {
+  // Group features by graph_type for layered layout
+  const capabilities = featuresWithTodos.filter(f => f.graph_type === 'capability');
+  const services = featuresWithTodos.filter(f => f.graph_type === 'service');
+  const risks = featuresWithTodos.filter(f => f.graph_type === 'risk');
+  const other = featuresWithTodos.filter(f => !['capability', 'service', 'risk'].includes(f.graph_type));
+
+  const layerOrder = [...capabilities, ...services, ...risks, ...other];
+
+  // Add feature nodes — position by layer (columns by type, rows within type)
+  layerOrder.forEach((feature, index) => {
+    const xOffset = index * 320;
     nodes.push({
       id: feature.id,
-      type: 'feature',
-      position: { x: index * 320, y: 0 },
+      type: feature.graph_type || 'capability',
+      position: { x: xOffset, y: 0 },
       data: {
         label: feature.title,
         status: feature.status,
         human_locked: feature.human_locked,
         entity_count: feature.entities.length,
         todo_count: feature.todos.length,
+        graph_type: feature.graph_type || 'capability',
+        constraints: feature.constraints || [],
+        confidence: feature.confidence,
+        source: feature.source,
       }
     });
 
@@ -1189,13 +1334,14 @@ server.get('/api/projects/:id/graph', async (request, reply) => {
     feature.todos.forEach((todo, todoIndex) => {
       nodes.push({
         id: todo.id,
-        type: 'todo',
-        position: { x: index * 320, y: (todoIndex + 1) * 80 + 120 },
+        type: todo.graph_type || 'service',
+        position: { x: xOffset, y: (todoIndex + 1) * 80 + 120 },
         data: {
           label: todo.title,
           status: todo.status,
           human_locked: todo.human_locked,
           entity_count: todo.entities.length,
+          graph_type: todo.graph_type || 'service',
         }
       });
 

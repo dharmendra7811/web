@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState, use } from 'react';
 import UploadZone from '@/app/components/prd/UploadZone';
+import ReviewPanel from '@/app/components/prd/ReviewPanel';
 import IngestionProgress from '@/app/components/prd/IngestionProgress';
 import FolderTree from '@/app/components/features/FolderTree';
 import ChatPanel from '@/app/components/chat/ChatPanel';
@@ -68,7 +69,11 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     setLoading(true);
     try {
       await updateProjectPRD(id, prdText);
-      await loadProject(); // Reload to get updated summary
+      // Trigger review instead of direct extraction
+      await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000'}/api/projects/${id}/review`, {
+        method: 'POST',
+      });
+      await loadProject(); // Reload to get review state
     } catch (error) {
       console.error(error);
     } finally {
@@ -208,15 +213,24 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                   </div>
                 </div>
 
-                <UploadZone 
-                  projectId={id} 
-                  onPRDChange={handlePRDChange} 
-                  onPRDSubmit={handlePRDSubmit}
-                  editing={editing}
-                  theme={theme}
-                />
+                {project.review_state === 'reviewing' && project.review_questions ? (
+                  <ReviewPanel 
+                    projectId={id}
+                    questions={project.review_questions}
+                    onClarify={loadProject}
+                    theme={theme}
+                  />
+                ) : (
+                  <UploadZone 
+                    projectId={id} 
+                    onPRDChange={handlePRDChange} 
+                    onPRDSubmit={handlePRDSubmit}
+                    editing={editing}
+                    theme={theme}
+                  />
+                )}
                 
-                {!editing && <IngestionProgress projectId={id} theme={theme} />}
+                {!editing && project.review_state !== 'reviewing' && <IngestionProgress projectId={id} theme={theme} />}
               </div>
 
               {/* High-Fidelity Interactive Folder Tree Component */}
