@@ -156,6 +156,40 @@ export async function sendChatMessage(projectId: string, message: string, sessio
   return res.json();
 }
 
+export async function getChatHistory(projectId: string): Promise<{ session_id: string; messages: any[] }> {
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/chat/history`);
+  if (!res.ok) {
+    throw new Error('Failed to fetch chat history');
+  }
+  return res.json();
+}
+
+export async function getChatSessions(projectId: string): Promise<any[]> {
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/chat/sessions`);
+  if (!res.ok) {
+    throw new Error('Failed to fetch chat sessions');
+  }
+  return res.json();
+}
+
+export async function createChatSession(projectId: string): Promise<{ session_id: string; messages: any[] }> {
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/chat/sessions`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    throw new Error('Failed to create new chat session');
+  }
+  return res.json();
+}
+
+export async function getChatSessionHistory(projectId: string, sessionId: string): Promise<{ session_id: string; messages: any[] }> {
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/chat/sessions/${sessionId}/history`);
+  if (!res.ok) {
+    throw new Error('Failed to fetch chat session history');
+  }
+  return res.json();
+}
+
 export async function getGraphData(projectId: string) {
   const res = await fetch(`${API_URL}/api/projects/${projectId}/graph`);
   if (!res.ok) {

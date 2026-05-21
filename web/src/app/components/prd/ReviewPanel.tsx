@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
@@ -11,6 +11,7 @@ interface Question {
   context: string;
   category: string;
   options?: string[];
+  recommended_default?: string;
 }
 
 interface ReviewPanelProps {
@@ -35,6 +36,20 @@ export default function ReviewPanel({ projectId, questions, onClarify, theme = '
   const [error, setError] = useState<string | null>(null);
 
   const [showMinor, setShowMinor] = useState(false);
+
+  useEffect(() => {
+    if (questions && questions.length > 0) {
+      setAnswers(prev => {
+        const updated = { ...prev };
+        questions.forEach((q, idx) => {
+          if (q.recommended_default && updated[idx] === undefined) {
+            updated[idx] = q.recommended_default;
+          }
+        });
+        return updated;
+      });
+    }
+  }, [questions]);
 
   const handleAnswer = (idx: number, value: string) => {
     setAnswers(prev => ({ ...prev, [idx]: value }));

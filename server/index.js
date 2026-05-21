@@ -41,30 +41,28 @@ const pool = new Pool({
   port: DB_PORT,
   database: DB_NAME,
   user: DB_USER,
-  password: DB_PASSWORD,
+  password: DB_PASSWORD
 });
 
-// Test connection
-pool.query('SELECT NOW()', (err, res) => {
-  if (err) {
-    console.error('Database connection error:', err.stack);
-  } else {
-    console.log('Connected to PostgreSQL');
-  }
-});
+// Redis client setup (if needed for websockets, skipping for simple demo)
+// const redisClient = new Redis(REDIS_URL);
 
 // Initialize Redis connection for BullMQ
 const connection = new Redis(REDIS_URL, { maxRetriesPerRequest: null });
 
-// Initialize OpenRouter (OpenAI-compatible)
-const openai = new OpenAI({
-  baseURL: OPENROUTER_BASE_URL,
-  apiKey: OPENROUTER_API_KEY,
-});
-
 // Initialize BullMQ queues
 const featureExtractionQueue = new Queue('feature-extraction', { connection });
 const todoGenerationQueue = new Queue('todo-generation', { connection });
+
+// Initialize OpenRouter (OpenAI-compatible)
+const openai = new OpenAI({
+  baseURL: OPENROUTER_BASE_URL,
+  apiKey: OPENROUTER_API_KEY || 'dummy-key',
+  defaultHeaders: {
+    "HTTP-Referer": "http://localhost:3000",
+    "X-Title": "Requirements OS",
+  }
+});
 
 // Helper function to run queries
 const query = (text, params) => pool.query(text, params);
@@ -72,166 +70,6 @@ const query = (text, params) => pool.query(text, params);
 // LLM Helper to call OpenRouter
 // LLM Helper to call OpenRouter
 async function callModel(model, prompt, systemPrompt) {
-  // Check if API key is not configured or is the default placeholder
-  if (!OPENROUTER_API_KEY || OPENROUTER_API_KEY === 'your-openrouter-key') {
-    console.log(`[LLM Mock] Active API key not found. Using high-fidelity mock LLM generation for ${model}...`);
-
-    // 1. Feature Extraction Prompt Mock
-    if (prompt.includes('Extract all features') || prompt.includes('product analyst. Extract')) {
-      // Create a nice set of features based on some keywords in the PRD text, or return defaults
-      const features = [
-        {
-          title: "User Authentication & Access Control",
-          description: "Enable secure email sign-up and login utilizing password-less one-time passcodes (OTP). Include session state, cookies, and JWT verification filters.",
-          actors: ["End User", "System Administrator"],
-          entities: ["user", "session", "otp"]
-        },
-        {
-          title: "PRD Parser & Text Extractor",
-          description: "Provide a seamless drag-and-drop document upload area accepting PDF, DOCX, TXT, and Markdown files. Convert binaries to clean plain text.",
-          actors: ["Developer", "Product Manager"],
-          entities: ["project", "document", "feature"]
-        },
-        {
-          title: "Dependency Graph Canvas",
-          description: "Visual canvas engine utilizing React Flow showing a multi-layered hierarchical network map of features and atomic implementation todos.",
-          actors: ["End User"],
-          entities: ["feature", "todo", "relationship"]
-        },
-        {
-          title: "AI Chat Impact Analyst",
-          description: "Conversational assistant sidebar processing raw human feature change instructions, conducting impact checks, and offering atomic triaged code changes.",
-          actors: ["End User", "System Analyst"],
-          entities: ["chat", "suggestion", "todo"]
-        }
-      ];
-      return JSON.stringify({ features });
-    }
-
-    // 2. Summary Prompt Mock
-    if (prompt.includes('Summarize this PRD') || prompt.includes('Summarize this PRD in 2-3 sentences')) {
-      return "Requirements OS is an interactive product management utility designed to ingest PRD documents, decompose them into structured high-level features and atomic technical implementation todos, and visualizes them on a dependency graph. It allows managers to describe scope edits using natural English chat, triages the cascading impact of changes, and exposes exports for ticket-management tools like Linear and Jira.";
-    }
-
-    // 3. Todo Generation Prompt Mock
-    if (prompt.includes('breaking down a feature') || prompt.includes('implementation todos')) {
-      const titleMatch = prompt.match(/Feature:\s*([^\n]+)/);
-      const featureTitle = titleMatch ? titleMatch[1].trim() : 'Feature Domain';
-
-      let todos = [];
-      if (featureTitle.includes('User Authentication')) {
-        todos = [
-          {
-            title: "Design user schema & security indexes",
-            detail: "Create Postgres DDL migration with unique email indexes, password hashes, and a session table.",
-            entities: ["user", "session"],
-            depends_on_titles: []
-          },
-          {
-            title: "Build JWT & session endpoint routing",
-            detail: "Implement secure login/signup route handlers in Fastify. Verify auth state using route-level validation hooks.",
-            entities: ["user", "session"],
-            depends_on_titles: ["Design user schema & security indexes"]
-          },
-          {
-            title: "Implement frontend login screen layout",
-            detail: "Create Next.js screen with interactive state, validation notifications, and secure cookie storage handlers.",
-            entities: ["user", "session"],
-            depends_on_titles: ["Build JWT & session endpoint routing"]
-          }
-        ];
-      } else if (featureTitle.includes('Parser')) {
-        todos = [
-          {
-            title: "Configure Fastify file upload engine",
-            detail: "Integrate multipart handler middleware and implement file-type validator filters.",
-            entities: ["project", "document"],
-            depends_on_titles: []
-          },
-          {
-            title: "Create Mammoth & pdfjs parsers",
-            detail: "Implement parser utility taking binary buffers and resolving raw text strings for storage.",
-            entities: ["document"],
-            depends_on_titles: ["Configure Fastify file upload engine"]
-          },
-          {
-            title: "Build document upload zone widget",
-            detail: "Create beautiful React file drop boundary with upload status updates and drag over transitions.",
-            entities: ["project", "document"],
-            depends_on_titles: ["Create Mammoth & pdfjs parsers"]
-          }
-        ];
-      } else if (featureTitle.includes('Graph')) {
-        todos = [
-          {
-            title: "Implement graph visual structure endpoints",
-            detail: "Create backend /api/projects/:id/graph fastify route compiling Postgres features & todos into nodes and depends_on edges.",
-            entities: ["feature", "todo"],
-            depends_on_titles: []
-          },
-          {
-            title: "Integrate React Flow canvas package",
-            detail: "Setup @xyflow/react canvas viewport inside web workspace, enabling fitView, zoom, and interactive navigation.",
-            entities: ["todo", "relationship"],
-            depends_on_titles: ["Implement graph visual structure endpoints"]
-          },
-          {
-            title: "Create custom custom node elements",
-            detail: "Design bespoke FeatureNode and TodoNode modules in React Flow showing active status and GIN entities.",
-            entities: ["feature", "todo"],
-            depends_on_titles: ["Integrate React Flow canvas package"]
-          }
-        ];
-      } else if (featureTitle.includes('Chat')) {
-        todos = [
-          {
-            title: "Create Fastify conversational router",
-            detail: "Implement POST /api/projects/:id/chat route executing NLP token matches and impact predictions.",
-            entities: ["chat", "suggestion"],
-            depends_on_titles: []
-          },
-          {
-            title: "Build AI interactive sidebar interface",
-            detail: "Design right panel chat window displaying formatted prompts, message history, and loading placeholders.",
-            entities: ["chat"],
-            depends_on_titles: ["Create Fastify conversational router"]
-          },
-          {
-            title: "Create Suggestion card approval elements",
-            detail: "Implement dynamic ImpactPanel and inline SuggestionCards allowing quick Apply and Skip actions.",
-            entities: ["suggestion", "todo"],
-            depends_on_titles: ["Build AI interactive sidebar interface"]
-          }
-        ];
-      } else {
-        todos = [
-          {
-            title: `Design database migrations for ${featureTitle}`,
-            detail: `Generate custom schema tables, indices, and triggers supporting ${featureTitle} structures.`,
-            entities: ["feature"],
-            depends_on_titles: []
-          },
-          {
-            title: `Build backend service endpoints for ${featureTitle}`,
-            detail: `Create Fastify CRUD operations to read and write ${featureTitle} models.`,
-            entities: ["feature"],
-            depends_on_titles: [`Design database migrations for ${featureTitle}`]
-          },
-          {
-            title: `Develop Next.js views for ${featureTitle}`,
-            detail: `Implement clean responsive frontend pages and client state bindings for ${featureTitle}.`,
-            entities: ["feature"],
-            depends_on_titles: [`Build backend service endpoints for ${featureTitle}`]
-          }
-        ];
-      }
-      return JSON.stringify({ todos });
-    }
-
-    // Catch all mock
-    return JSON.stringify({});
-  }
-
   try {
     const response = await openai.chat.completions.create({
       model,
@@ -305,7 +143,7 @@ const featureExtractionWorker = new Worker('feature-extraction', async (job) => 
 
   // Generate summary
   console.log(`[FeatureExtractionWorker] Generating summary for project ${projectId}`);
-  const summaryPrompt = `You are a product analyst. Summarize this PRD in 2-3 sentences. Do not include any greeting or conversational filler.\n\nPRD:\n${project.prd_text}`;
+  const summaryPrompt = `You are a product analyst. Summarize this PRD in 2-3 sentences. Your summary must cover: (1) the primary user role this product serves, (2) the core value proposition, and (3) any key technical constraints or integrations mentioned (e.g. payment providers, auth methods, compliance requirements). Do not include any greeting or conversational filler.\n\nPRD:\n${project.prd_text}`;
   const summaryText = await callModel('openai/gpt-oss-120b', summaryPrompt, 'You are a precise technical writer.');
 
   await query('UPDATE projects SET summary = $1 WHERE id = $2', [summaryText.trim(), projectId]);
@@ -328,6 +166,11 @@ Each feature must include:
     "service" — backend/internal service module (e.g. NOTIFICATION_DISPATCHER, PAYMENT_GATEWAY_ADAPTER)
     "risk" — compliance, security, or operational risk concern (e.g. PCI_COMPLIANCE, RATE_LIMITER, AUDIT_LOGGER)
   If a feature fits multiple, pick the most specific. Prefer "risk" only when the feature IS primarily a risk concern, not just a feature that happens to have constraints.
+
+Deduplication rules (IMPORTANT):
+- If two capabilities are variations of the same domain verb or business action (e.g. AUTH_LOGIN and AUTH_REGISTER both deal with authentication entry), merge them into ONE feature with a broader title (e.g. AUTH_ENTRY).
+- Do NOT produce sibling features that differ only by minor workflow variation. Consolidate aggressively.
+- Each feature title must be unique.
 
 Return ONLY valid JSON. No preamble, no explanation, no markdown.
 
@@ -416,6 +259,7 @@ Rules:
 - Do NOT generate: "add validation hook", "write unit test", "fix lint error", "run npm install"
 - Cover all layers: data model, backend service, frontend component, infra config
 - Include dependencies so a developer knows what to build first
+- IMPORTANT: The "depends_on_titles" array must ONLY reference titles of other todos defined in THIS response. Do not reference todos from other features or any title not present in this output. If there are no intra-feature dependencies, use an empty array [].
 
 Classify each assignment into a graph layer:
   "service" — backend service, primary API endpoint, or database schema
@@ -647,36 +491,44 @@ server.post('/api/projects/:id/review', async (request, reply) => {
     return reply.code(400).send({ error: 'No PRD text to review' });
   }
 
-  const reviewPrompt = `You are a Senior Solutions Architect reviewing a PRD for technical completeness.
+  const reviewPrompt = `You are a Senior Solutions Architect reviewing a PRD for technical completeness before engineering begins.
 
-First, map out all the distinct business modules in this PRD (e.g., Auth, Checkout, Catalog, User Profile). You MUST distribute your questions evenly across these modules. Do not fixate on one single area.
+Step 1: Map all distinct business modules in this PRD (e.g., Auth, Checkout, Catalog, Notifications). Keep this list internal — do not output it.
+Step 2: For each module, identify ONLY questions where the answer materially changes a database schema, core business logic, or a third-party integration decision. Ignore surface-level ambiguity.
 
-Analyze the PRD to find missing specifications that block implementation. For each question, assign a severity level:
-- "critical": Blocks database schema design or core business logic (e.g., "Can one user hold multiple tickets for the same slot?", "How are partial refunds handled?").
-- "moderate": Important edge cases and workflows (e.g., "What happens to a ticket if an event is rescheduled?").
-- "minor": Technical minutiae and exact numbers (e.g., "What is the exact OTP retry limit?").
+Severity levels:
+- "critical": The answer directly changes table structure, a foreign key constraint, or a branching business rule. Engineering cannot proceed without this. (e.g., "Can one user hold multiple active subscriptions simultaneously?", "Are refunds processed immediately or queued for end-of-day batch?")
+- "moderate": An important edge case or state-transition gap that will cause bugs if assumed incorrectly. (e.g., "What happens to in-progress orders when a vendor account is deactivated?")
+- "minor": A configuration detail or threshold that can be defaulted but should be confirmed. (e.g., "What is the maximum number of items allowed per cart?")
 
 Rules:
-- It is NOT compulsory to ask questions. If a module is perfectly clear, ask ZERO questions about it.
-- Only ask questions if there is a GENUINE technical blocker. Do not invent questions just to fill space.
-- If the entire PRD is perfectly defined, return an empty questions array: [].
-- If you do ask questions, distribute them evenly. Do not ask more than 2-3 questions about any single module.
-- Ensure EVERY question has an "options" array containing 3-4 plausible answer choices.
-- Return ONLY valid JSON. No preamble.
+- Do NOT ask questions just to fill space. If a module is clearly specified, ask ZERO questions about it.
+- If the entire PRD is unambiguous, return "questions": [].
+
+- Distribute questions across modules — no more than 3 questions for any single module.
+- Order the output array by severity: all "critical" questions first, then "moderate", then "minor".
+- Every question MUST have an "options" array of 3-4 concrete, mutually exclusive answer choices — not vague placeholders.
+- Every question MUST have a "recommended_default" string — the option you would implement if forced to decide today, based on standard industry practice. This must exactly match one entry in the "options" array.
+- The "context" field must explain the TECHNICAL CONSEQUENCE of leaving this unspecified (e.g., "Without this, we cannot design the refund ledger table or determine whether a compensating transaction entry is required."). Do not just restate what the PRD says.
+- The "summary" field must be a single sentence technical verdict (e.g., "The PRD is mostly complete but has 2 critical schema gaps in the Checkout and Subscription modules that must be resolved before data modelling.").
+
+Return ONLY valid JSON. No preamble, no explanation, no markdown.
 
 {
-  "summary": "Technical assessment of PRD completeness",
+  "summary": "One-sentence technical verdict on PRD completeness and where the gaps are.",
   "questions": [
     {
       "module": "Checkout",
       "severity": "critical",
       "question": "If a multi-day event is partially cancelled, how are refunds calculated?",
-      "context": "The PRD mentions cancellations but not partial refunds.",
+      "context": "Without this, we cannot design the refund ledger schema or determine whether a line-item credit table is required alongside the orders table.",
       "options": [
-        "Full refund automatically",
-        "Prorated refund per day",
-        "Manual support ticket required"
-      ]
+        "Full refund issued automatically to original payment method",
+        "Prorated refund calculated per remaining day",
+        "Store credit issued to wallet balance",
+        "Manual support ticket required — no automated refund"
+      ],
+      "recommended_default": "Prorated refund calculated per remaining day"
     }
   ]
 }
@@ -687,6 +539,21 @@ ${project.prd_text}`;
   try {
     const raw = await callModel('openai/gpt-oss-120b', reviewPrompt);
     const review = parseJSON(raw);
+
+    // If the AI returned an empty array, auto-skip review and jump straight to ingestion!
+    if (!review.questions || review.questions.length === 0) {
+      await query(
+        "UPDATE projects SET review_state = 'answered' WHERE id = $1",
+        [id]
+      );
+
+      await featureExtractionQueue.add('extract-features', { projectId: id }, {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 1000 },
+      });
+
+      return { review_state: 'answered', message: 'No blockers found. Ingestion auto-started.', questions: [] };
+    }
 
     await query(
       "UPDATE projects SET review_state = 'reviewing', review_questions = $1 WHERE id = $2",
@@ -983,6 +850,236 @@ server.delete('/api/todos/:id', async (request, reply) => {
 });
 
 // Chat routes
+// GET all chat sessions for a project
+server.get('/api/projects/:id/chat/sessions', async (request, reply) => {
+  const { id } = request.params;
+
+  try {
+    const sessionsRes = await query(
+      "SELECT id, status, created_at FROM chat_sessions WHERE project_id = $1 ORDER BY created_at DESC",
+      [id]
+    );
+
+    const sessions = [];
+    for (const session of sessionsRes.rows) {
+      // Find the first user message for a title
+      const firstMsg = await query(
+        "SELECT content FROM chat_messages WHERE session_id = $1 AND role = 'user' ORDER BY created_at ASC LIMIT 1",
+        [session.id]
+      );
+      sessions.push({
+        id: session.id,
+        status: session.status,
+        created_at: session.created_at,
+        title: firstMsg.rows[0]?.content || "New conversation"
+      });
+    }
+
+    return sessions;
+  } catch (err) {
+    request.log.error(err);
+    return reply.code(500).send({ error: 'Failed to retrieve chat sessions', details: err.message });
+  }
+});
+
+// POST to create a new chat session for a project
+server.post('/api/projects/:id/chat/sessions', async (request, reply) => {
+  const { id } = request.params;
+
+  try {
+    // 1. Optional: Archive or update older open sessions
+    await query(
+      "UPDATE chat_sessions SET status = 'committed' WHERE project_id = $1 AND status = 'open'",
+      [id]
+    );
+
+    // 2. Create new session
+    const sessionRes = await query(
+      "INSERT INTO chat_sessions (project_id, status) VALUES ($1, 'open') RETURNING id, status, created_at",
+      [id]
+    );
+    const newSession = sessionRes.rows[0];
+
+    return {
+      session_id: newSession.id,
+      messages: [
+        {
+          id: 'welcome',
+          sender: 'ai',
+          text: "Hello! I am your Requirements Impact Assistant. Ask me to add features, adjust tasks, or perform impact triage. Try typing 'Add Google OAuth login' or click one of the quick commands below!"
+        }
+      ]
+    };
+  } catch (err) {
+    request.log.error(err);
+    return reply.code(500).send({ error: 'Failed to create chat session', details: err.message });
+  }
+});
+
+// GET specific chat session history
+server.get('/api/projects/:id/chat/sessions/:session_id/history', async (request, reply) => {
+  const { id, session_id } = request.params;
+
+  try {
+    // 1. Fetch all messages in the session
+    const messagesRes = await query(
+      "SELECT id, role, content, created_at FROM chat_messages WHERE session_id = $1 ORDER BY created_at ASC, id ASC",
+      [session_id]
+    );
+
+    // 2. Fetch all suggestions in the session
+    const suggestionsRes = await query(
+      "SELECT * FROM impact_suggestions WHERE session_id = $1",
+      [session_id]
+    );
+
+    // Group suggestions by triggered_by (user message content)
+    const suggestionsByTrigger = {};
+    for (const sug of suggestionsRes.rows) {
+      const key = sug.triggered_by || '';
+      if (!suggestionsByTrigger[key]) {
+        suggestionsByTrigger[key] = [];
+      }
+      let proposedVal = sug.proposed_value;
+      if (typeof proposedVal === 'string') {
+        try {
+          proposedVal = JSON.parse(proposedVal);
+        } catch (e) {}
+      }
+      suggestionsByTrigger[key].push({
+        ...sug,
+        proposed_value: proposedVal
+      });
+    }
+
+    // Attach suggestions to the assistant message immediately following the triggering user message
+    const messages = [];
+    for (let i = 0; i < messagesRes.rows.length; i++) {
+      const msg = messagesRes.rows[i];
+      const mappedMsg = {
+        id: msg.id,
+        sender: msg.role === 'user' ? 'user' : 'ai',
+        text: msg.content,
+        created_at: msg.created_at,
+        suggestions: []
+      };
+
+      if (msg.role === 'assistant') {
+        // Find the preceding user message
+        const prevMsg = messagesRes.rows[i - 1];
+        if (prevMsg && prevMsg.role === 'user') {
+          const triggerText = prevMsg.content;
+          if (suggestionsByTrigger[triggerText]) {
+            mappedMsg.suggestions = suggestionsByTrigger[triggerText];
+          }
+        }
+      }
+      messages.push(mappedMsg);
+    }
+
+    return {
+      session_id: session_id,
+      messages: messages.length > 0 ? messages : [
+        {
+          id: 'welcome',
+          sender: 'ai',
+          text: "Hello! I am your Requirements Impact Assistant. Ask me to add features, adjust tasks, or perform impact triage. Try typing 'Add Google OAuth login' or click one of the quick commands below!"
+        }
+      ]
+    };
+  } catch (err) {
+    request.log.error(err);
+    return reply.code(500).send({ error: 'Failed to retrieve session history', details: err.message });
+  }
+});
+
+// GET active chat session history for a project
+server.get('/api/projects/:id/chat/history', async (request, reply) => {
+  const { id } = request.params;
+
+  try {
+    // 1. Get or create active session
+    let sessionRes = await query(
+      "SELECT id FROM chat_sessions WHERE project_id = $1 AND status = 'open' ORDER BY created_at DESC LIMIT 1",
+      [id]
+    );
+    let sessionId;
+    if (sessionRes.rows.length === 0) {
+      const newSession = await query(
+        "INSERT INTO chat_sessions (project_id, status) VALUES ($1, 'open') RETURNING id",
+        [id]
+      );
+      sessionId = newSession.rows[0].id;
+    } else {
+      sessionId = sessionRes.rows[0].id;
+    }
+
+    // 2. Fetch all messages in the session
+    const messagesRes = await query(
+      "SELECT id, role, content, created_at FROM chat_messages WHERE session_id = $1 ORDER BY created_at ASC, id ASC",
+      [sessionId]
+    );
+
+    // 3. Fetch all suggestions in the session
+    const suggestionsRes = await query(
+      "SELECT * FROM impact_suggestions WHERE session_id = $1",
+      [sessionId]
+    );
+
+    // Group suggestions by triggered_by (user message content)
+    const suggestionsByTrigger = {};
+    for (const sug of suggestionsRes.rows) {
+      const key = sug.triggered_by || '';
+      if (!suggestionsByTrigger[key]) {
+        suggestionsByTrigger[key] = [];
+      }
+      let proposedVal = sug.proposed_value;
+      if (typeof proposedVal === 'string') {
+        try {
+          proposedVal = JSON.parse(proposedVal);
+        } catch (e) {}
+      }
+      suggestionsByTrigger[key].push({
+        ...sug,
+        proposed_value: proposedVal
+      });
+    }
+
+    // Attach suggestions to the assistant message immediately following the triggering user message
+    const messages = [];
+    for (let i = 0; i < messagesRes.rows.length; i++) {
+      const msg = messagesRes.rows[i];
+      const mappedMsg = {
+        id: msg.id,
+        sender: msg.role === 'user' ? 'user' : 'ai',
+        text: msg.content,
+        created_at: msg.created_at,
+        suggestions: []
+      };
+
+      if (msg.role === 'assistant') {
+        // Find the preceding user message
+        const prevMsg = messagesRes.rows[i - 1];
+        if (prevMsg && prevMsg.role === 'user') {
+          const triggerText = prevMsg.content;
+          if (suggestionsByTrigger[triggerText]) {
+            mappedMsg.suggestions = suggestionsByTrigger[triggerText];
+          }
+        }
+      }
+      messages.push(mappedMsg);
+    }
+
+    return {
+      session_id: sessionId,
+      messages: messages
+    };
+  } catch (err) {
+    request.log.error(err);
+    return reply.code(500).send({ error: 'Failed to retrieve chat history', details: err.message });
+  }
+});
+
 server.post('/api/projects/:id/chat', async (request, reply) => {
   const { id } = request.params;
   const { message, session_id } = request.body;
@@ -1021,111 +1118,64 @@ server.post('/api/projects/:id/chat', async (request, reply) => {
         featureTodos.map(t => ` - [Todo UUID: ${t.id}] "${t.title}": "${t.detail || ''}"`).join('\n');
     }).join('\n\n');
 
-    // 5. Generate Response via LLM (or high-fidelity mock if no API key)
+    // 4b. Fetch prior chat history for this session to provide conversation memory
+    let historyStr = '';
+    if (sessionId) {
+      const historyRes = await query(
+        'SELECT role, content FROM chat_messages WHERE session_id = $1 ORDER BY created_at ASC LIMIT 20',
+        [sessionId]
+      );
+      if (historyRes.rows.length > 0) {
+        historyStr = historyRes.rows
+          .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+          .join('\n');
+      }
+    }
+
+    // 5. Generate Response via LLM
     let assistantResponse = '';
     let suggestions = [];
 
-    if (!OPENROUTER_API_KEY || OPENROUTER_API_KEY === 'your-openrouter-key') {
-      console.log("[LLM Mock] Chat endpoint executing high-fidelity mock fallback...");
-      const userLower = message.toLowerCase();
+    const chatPrompt = `You are a product analyst conducting technical impact analysis. The user wants to apply a requirements change to the project technical todos.
+Analyze the user's message against the existing features and todos. Determine how this change cascades through the system.
 
-      if (userLower.includes('oauth') || userLower.includes('google') || userLower.includes('login')) {
-        assistantResponse = "Integrating Google OAuth requires setting up the client keys in Next.js, implementing session routing in Fastify, and updating the database model to persist oauth tokens. I have drafted 2 technical todos to support this.";
-        suggestions = [
-          {
-            target_id: null,
-            target_type: 'todo',
-            suggestion_type: 'add',
-            description: "Configure Google Developer API credentials in server configuration files.",
-            proposed_value: {
-              title: "Setup Google OAuth environment variables",
-              detail: "Securely store GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET variables in backend environments.",
-              entities: ["user", "session"],
-              feature_id: features[0]?.id || null
-            }
-          },
-          {
-            target_id: null,
-            target_type: 'todo',
-            suggestion_type: 'add',
-            description: "Implement callback handler routes for session authorization token generation.",
-            proposed_value: {
-              title: "Create Fastify Google OAuth callback routes",
-              detail: "Develop handler capturing redirects, requesting tokens, and mapping records to active user sessions.",
-              entities: ["user", "session"],
-              feature_id: features[0]?.id || null
-            }
-          }
-        ];
-      } else if (userLower.includes('remove') || userLower.includes('delete') || userLower.includes('obsolete')) {
-        const targetTodo = todos[0];
-        assistantResponse = targetTodo
-          ? `Removing the obsolete todo "${targetTodo.title}" will simplify the development timeline without breaking any active downstream database or code dependencies. I have drafted a removal card.`
-          : "No active todos are currently available to suggest removing.";
-        suggestions = targetTodo ? [
-          {
-            target_id: targetTodo.id,
-            target_type: 'todo',
-            suggestion_type: 'remove',
-            description: `Delete obsolete todo: "${targetTodo.title}"`,
-            proposed_value: null
-          }
-        ] : [];
-      } else {
-        assistantResponse = `I have processed your requirements change request: "${message}". I will create a new implementation todo under your active features to monitor this task.`;
-        suggestions = [
-          {
-            target_id: null,
-            target_type: 'todo',
-            suggestion_type: 'add',
-            description: `Fulfill custom requirements instruction: "${message.length > 50 ? message.slice(0, 47) + '...' : message}"`,
-            proposed_value: {
-              title: message.length > 40 ? message.slice(0, 40) + '...' : message,
-              detail: `Implement requested capability: ${message}`,
-              entities: ["system"],
-              feature_id: features[0]?.id || null
-            }
-          }
-        ];
-      }
-    } else {
-      const chatPrompt = `You are a product analyst conducting technical impact analysis. The user wants to apply a requirements change to the project technical todos.
-  
-Project Summary: ${projectSummary}
-  
-Existing Features and Todos:
+Project Summary:
+${projectSummary}
+
+Existing State:
 ${contextStr}
-  
-User Instruction: "${message}"
-  
-Your job is to identify what todo additions, removals, or modifications are needed to satisfy this instruction.
-  
-Return ONLY a valid JSON object matching the schema. No markdown fences, no preamble.
+${historyStr ? `\nConversation History (most recent at bottom):\n${historyStr}\n` : ''}
+User Request: "${message}"
+
+IMPORTANT: Use the Conversation History to understand prior decisions and intent. If the user is referring to something mentioned earlier in the conversation (e.g. "also remove that", "keep the previous change"), resolve the reference using the history. Do not treat each message as independent.
+
+Output ONLY a JSON object with two keys:
+1. "assistantResponse": A conversational response explaining what the change means and what parts of the system are affected. (e.g. "Adding Google OAuth will require adding two new backend routes and updating the Next.js auth configuration.")
+2. "suggestions": An array of specific changes to apply to the todo list.
+
+Suggestion format:
 {
-  "assistant_response": "Explain the cascading impact of this change in 2-3 sentences.",
-  "suggestions": [
-    {
-      "target_id": "UUID of existing todo if type is remove or modify, else null",
-      "target_type": "todo",
-      "suggestion_type": "add" | "modify" | "remove",
-      "description": "Short description of what changes and why",
-      "proposed_value": {
-        "title": "action-oriented title for the todo",
-        "detail": "acceptance criteria detail",
-        "entities": ["nouns involved"],
-        "feature_id": "UUID of the feature this todo belongs to (MUST match one of the existing features UUIDs)"
-      }
-    }
-  ]
-}`;
+  "target_id": "uuid string if modifying or removing, or null if adding",
+  "target_type": "todo",
+  "suggestion_type": "add" | "modify" | "remove",
+  "description": "Short explanation of why this suggestion is needed",
+  "proposed_value": {
+    "title": "String",
+    "detail": "String",
+    "entities": ["array", "of", "strings"],
+    "feature_id": "uuid string of the feature this belongs to (required for 'add')"
+  } // null if suggestion_type is "remove"
+}
 
-      const chatRaw = await callModel('openai/gpt-oss-120b', chatPrompt);
-      const parsed = parseJSON(chatRaw);
-      assistantResponse = parsed.assistant_response;
-      suggestions = parsed.suggestions || [];
-    }
+Remember to map any "add" suggestions to the most relevant existing feature_id. If no exact match exists, pick the closest one.
+Return ONLY valid JSON.`;
 
-    // 6. Save Assistant Response in DB
+    const chatRaw = await callModel('openai/gpt-oss-120b', chatPrompt);
+    const parsed = parseJSON(chatRaw);
+    assistantResponse = parsed.assistantResponse || 'I have analyzed the request and prepared suggestions.';
+    suggestions = parsed.suggestions || [];
+
+    // 6. Save Assistant Message
     await query(
       "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, 'assistant', $2)",
       [sessionId, assistantResponse]
@@ -1146,14 +1196,15 @@ Return ONLY a valid JSON object matching the schema. No markdown fences, no prea
           message,
           sug.target_id || null,
           sug.target_type || 'todo',
-          sug.suggestion_type,
-          sug.description,
+          sug.suggestion_type || 'add',
+          sug.description || '',
           sug.proposed_value ? JSON.stringify(sug.proposed_value) : null
         ]
       );
       savedSuggestions.push(insertRes.rows[0]);
     }
 
+    // Catch all mock
     return {
       session_id: sessionId,
       assistant_response: assistantResponse,

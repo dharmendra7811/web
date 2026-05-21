@@ -1,7 +1,15 @@
 "use client";
 
 import { useState, useEffect, useRef } from 'react';
-import { sendChatMessage, applySuggestion, skipSuggestion } from '@/lib/api';
+import { 
+  sendChatMessage, 
+  applySuggestion, 
+  skipSuggestion, 
+  getChatHistory, 
+  getChatSessions, 
+  createChatSession, 
+  getChatSessionHistory 
+} from '@/lib/api';
 
 interface ChatPanelProps {
   projectId: string;
@@ -43,13 +51,100 @@ export default function ChatPanel({ projectId, theme = 'dark' }: ChatPanelProps)
   
   // Interactive expanded suggestion details state
   const [expandedSuggestions, setExpandedSuggestions] = useState<Record<string, boolean>>({});
+  
+  // Sessions management
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [showSessionsList, setShowSessionsList] = useState(true);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Fetch chat sessions
+  const fetchSessions = async () => {
+    try {
+      const data = await getChatSessions(projectId);
+      setSessions(data);
+    } catch (error) {
+      console.error('Failed to load chat sessions:', error);
+    }
+  };
+
+  // Load chat history and sessions on mount or when projectId changes
+  useEffect(() => {
+    let active = true;
+    
+    const initializeChat = async () => {
+      setLoading(true);
+      try {
+        // Load sessions list
+        const sessionsData = await getChatSessions(projectId);
+        if (!active) return;
+        setSessions(sessionsData);
+
+        // Load most recent active session history
+        const data = await getChatHistory(projectId);
+        if (!active) return;
+        
+        if (data.session_id) {
+          setSessionId(data.session_id);
+        }
+        if (data.messages && data.messages.length > 0) {
+          setMessages(data.messages);
+        } else {
+          setMessages([
+            {
+              id: 'welcome',
+              sender: 'ai',
+              text: "Hello! I am your Requirements Impact Assistant. Ask me to add features, adjust tasks, or perform impact triage. Try typing 'Add Google OAuth login' or click one of the quick commands below!"
+            }
+          ]);
+        }
+      } catch (error) {
+        console.error('Failed to initialize chat:', error);
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+
+    initializeChat();
+
+    return () => {
+      active = false;
+    };
+  }, [projectId]);
 
   // Auto scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Create a new chat session
+  const handleNewChat = async () => {
+    setLoading(true);
+    try {
+      const data = await createChatSession(projectId);
+      setSessionId(data.session_id);
+      setMessages(data.messages);
+      await fetchSessions();
+    } catch (error) {
+      console.error('Failed to create new chat session:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Switch to a specific session
+  const handleSelectSession = async (selSessionId: string) => {
+    setLoading(true);
+    try {
+      const data = await getChatSessionHistory(projectId, selSessionId);
+      setSessionId(data.session_id);
+      setMessages(data.messages);
+    } catch (error) {
+      console.error('Failed to load session:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const executeCommand = async (commandText: string) => {
     if (loading) return;
@@ -75,6 +170,9 @@ export default function ChatPanel({ projectId, theme = 'dark' }: ChatPanelProps)
           suggestions: response.suggestions || []
         }
       ]);
+      
+      // Refresh sessions to dynamically update conversation title
+      await fetchSessions();
     } catch (error: any) {
       console.error('Failed to send chat message:', error);
       setMessages(prev => [
@@ -163,263 +261,345 @@ export default function ChatPanel({ projectId, theme = 'dark' }: ChatPanelProps)
   ];
 
   return (
-    <div className={`border rounded-2xl shadow-2xl flex flex-col h-[600px] overflow-hidden font-sans transition-all duration-300 ${
-      theme === 'dark' ? 'border-slate-800 bg-slate-900 text-slate-100' : 'border-slate-205 bg-white text-slate-800'
+    <div className={`border rounded-2xl flex h-[650px] overflow-hidden font-sans transition-all duration-300 ${
+      theme === 'dark' 
+        ? 'border-slate-800 bg-slate-900 text-slate-100' 
+        : 'border-slate-200 bg-white text-slate-800'
     }`}>
       
-      {/* Chat Panel Header */}
-      <div className={`border-b px-4 py-3 flex items-center justify-between transition-colors ${
-        theme === 'dark' ? 'bg-slate-955 border-slate-800/80' : 'bg-slate-50 border-slate-200'
+      {/* Dynamic Conversations List Sidebar */}
+      <div className={`transition-all duration-300 flex flex-col border-r h-full relative z-10 ${
+        showSessionsList ? 'w-64 opacity-100' : 'w-0 opacity-0 overflow-hidden border-r-0'
+      } ${
+        theme === 'dark' ? 'bg-slate-950 border-slate-850/80' : 'bg-slate-50 border-slate-200'
       }`}>
-        <div className="flex items-center gap-2">
-          <svg className="w-5 h-5 text-indigo-500 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-          </svg>
-          <div>
-            <h2 className={`text-xs font-black uppercase tracking-wider ${
-              theme === 'dark' ? 'text-slate-300' : 'text-slate-700'
-            }`}>
-              PRD Assistant
-            </h2>
-            <p className={`text-[9px] mt-0.5 font-bold ${
-              theme === 'dark' ? 'text-slate-500' : 'text-slate-450'
-            }`}>
-              Triage scope modifications via English prompt
-            </p>
-          </div>
-        </div>
-        <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase border transition-all hover:scale-105 ${
-          theme === 'dark' 
-            ? 'bg-indigo-950/80 text-indigo-355 border-indigo-900/50 shadow-[0_2px_8px_rgba(99,102,241,0.15)]' 
-            : 'bg-indigo-50 text-indigo-755 border-indigo-200'
+        <div className={`p-4 border-b flex items-center justify-between ${
+          theme === 'dark' ? 'border-slate-850' : 'border-slate-200'
         }`}>
-          <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 animate-ping"></span>
-          AI coprocessor
-        </span>
+          <span className="text-[10px] font-bold uppercase tracking-widest text-indigo-400 flex items-center gap-1.5">
+            <span className="h-1.5 w-1.5 rounded-full bg-indigo-500"></span>
+            Chats
+          </span>
+          <button
+            onClick={handleNewChat}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase bg-indigo-600 hover:bg-indigo-500 text-white active:scale-95 transition-all duration-150"
+            title="Create brand new conversation"
+          >
+            <span>+</span> New
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-3.5 space-y-2.5 scrollbar-thin">
+          {sessions.length === 0 ? (
+            <div className="text-center py-8 text-xs text-slate-500 font-medium">
+              No sessions active.
+            </div>
+          ) : (
+            sessions.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => handleSelectSession(s.id)}
+                className={`w-full text-left p-3 rounded-xl border text-xs transition-all duration-200 flex flex-col gap-1.5 ${
+                  s.id === sessionId
+                    ? (theme === 'dark' 
+                        ? 'bg-indigo-950/40 border-indigo-500/80 text-white font-bold' 
+                        : 'bg-indigo-50 border-indigo-300 text-indigo-850 font-bold')
+                    : (theme === 'dark' 
+                        ? 'bg-slate-900/40 border-slate-850/60 hover:bg-slate-850/30 text-slate-400 hover:text-slate-200' 
+                        : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-600')
+                }`}
+              >
+                <span className="truncate w-full block text-[11px] tracking-wide">{s.title}</span>
+                <span className={`text-[8px] font-bold font-mono ${
+                  s.id === sessionId ? 'text-indigo-400' : 'text-slate-500'
+                }`}>
+                  {new Date(s.created_at).toLocaleDateString(undefined, { 
+                    month: 'short', 
+                    day: 'numeric', 
+                    hour: '2-digit', 
+                    minute: '2-digit' 
+                  })}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
       </div>
 
-      {/* Messages Feed */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 pr-1 scrollbar-thin select-text">
-        {messages.map((msg) => (
-          <div key={msg.id} className="space-y-2.5 animate-[fadeIn_0.2s_ease-out]">
-            <div className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`rounded-2xl px-3.5 py-2.5 max-w-[85%] text-xs shadow-md leading-relaxed transform hover:scale-[1.01] transition-transform duration-200 ${
-                msg.sender === 'user' 
-                  ? 'bg-indigo-600 text-white font-bold rounded-br-none shadow-indigo-600/10 border border-indigo-500/30' 
-                  : theme === 'dark'
-                    ? 'bg-slate-950/50 text-slate-200 border border-slate-800/80 rounded-bl-none'
-                    : 'bg-slate-50 text-slate-700 border-slate-150 rounded-bl-none'
-              }`}>
-                {msg.text}
+      {/* Main Conversational Workspace */}
+      <div className="flex-1 flex flex-col h-full overflow-hidden bg-transparent">
+        
+        {/* Chat Panel Header */}
+        <div className={`border-b px-4 py-3.5 flex items-center justify-between transition-colors ${
+          theme === 'dark' ? 'bg-slate-950 border-slate-850' : 'bg-slate-50 border-slate-200'
+        }`}>
+          <div className="flex items-center gap-3">
+            {/* Sidebar toggle button */}
+            <button
+              onClick={() => setShowSessionsList(!showSessionsList)}
+              className={`p-2 rounded-xl border transition-all duration-200 active:scale-95 ${
+                theme === 'dark' 
+                  ? 'border-slate-850 bg-slate-950 hover:bg-slate-900 text-slate-400' 
+                  : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-600'
+              }`}
+              title="Toggle sidebar conversation list"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+            
+            <div className="flex items-center gap-2">
+              <span className="flex h-2 w-2 relative">
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
+              </span>
+              <div>
+                <h2 className={`text-xs font-bold uppercase tracking-widest ${
+                  theme === 'dark' ? 'text-slate-250' : 'text-slate-700'
+                }`}>
+                  PRD Assistant
+                </h2>
+                <p className={`text-[9px] mt-0.5 font-semibold ${
+                  theme === 'dark' ? 'text-slate-500' : 'text-slate-450'
+                }`}>
+                  Interactive requirements impact loop
+                </p>
               </div>
             </div>
+          </div>
 
-            {/* Suggestions cards deck */}
-            {msg.suggestions && msg.suggestions.length > 0 && (
-              <div className="pl-4 border-l-2 border-indigo-500/40 space-y-3.5 mt-1.5 max-w-[95%]">
-                <div className={`text-[9px] font-black uppercase tracking-widest mb-1.5 ${
-                  theme === 'dark' ? 'text-indigo-400' : 'text-indigo-650'
+          <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[9px] font-bold uppercase border ${
+            theme === 'dark' 
+              ? 'bg-indigo-950/40 text-indigo-300 border-indigo-900/40' 
+              : 'bg-indigo-50 text-indigo-700 border-indigo-200'
+          }`}>
+            AI coprocessor
+          </span>
+        </div>
+
+        {/* Messages Feed */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-5 pr-1 scrollbar-thin select-text">
+          {messages.map((msg) => (
+            <div key={msg.id} className="space-y-3 animate-[fadeIn_0.2s_ease-out]">
+              <div className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`rounded-2xl px-4 py-3 max-w-[85%] text-xs leading-relaxed border ${
+                  msg.sender === 'user' 
+                    ? 'bg-indigo-600 text-white font-bold rounded-br-none border-indigo-500/20' 
+                    : theme === 'dark'
+                      ? 'bg-slate-950/40 text-slate-200 border-slate-850/80 rounded-bl-none'
+                      : 'bg-slate-50 text-slate-700 border-slate-150 rounded-bl-none'
                 }`}>
-                  Proposed Technical Updates
+                  {msg.text}
                 </div>
-                {msg.suggestions.map((sug) => {
-                  const typeColors = theme === 'dark' 
-                    ? {
-                        add: { border: 'border-emerald-900/40', bg: 'bg-emerald-950/15', text: 'text-emerald-350', badge: 'bg-emerald-950/80 text-emerald-400 border border-emerald-900/50' },
-                        modify: { border: 'border-amber-900/40', bg: 'bg-amber-950/10', text: 'text-amber-350', badge: 'bg-amber-950/80 text-amber-400 border border-amber-900/50' },
-                        remove: { border: 'border-rose-900/40', bg: 'bg-rose-950/10', text: 'text-rose-350', badge: 'bg-rose-950/80 text-rose-450 border border-rose-900/50' },
-                        flag: { border: 'border-purple-900/40', bg: 'bg-purple-950/10', text: 'text-purple-355', badge: 'bg-purple-950/80 text-purple-400 border border-purple-900/50' }
-                      }
-                    : {
-                        add: { border: 'border-emerald-250', bg: 'bg-emerald-50/50', text: 'text-emerald-800', badge: 'bg-emerald-100 text-emerald-700 border border-emerald-200' },
-                        modify: { border: 'border-amber-250', bg: 'bg-amber-50/50', text: 'text-amber-800', badge: 'bg-amber-100 text-amber-700 border border-amber-200' },
-                        remove: { border: 'border-rose-250', bg: 'bg-rose-50/50', text: 'text-rose-800', badge: 'bg-rose-100 text-rose-700 border border-rose-200' },
-                        flag: { border: 'border-purple-250', bg: 'bg-purple-50/50', text: 'text-purple-800', badge: 'bg-purple-100 text-purple-755 border border-purple-200' }
-                      };
-                  const colors = typeColors[sug.suggestion_type] || typeColors.add;
-                  const isDetailsExpanded = expandedSuggestions[sug.id];
-                  
-                  return (
-                    <div key={sug.id} className={`border rounded-2xl p-3 shadow-md transition-all duration-300 transform hover:-translate-y-0.5 hover:shadow-indigo-500/5 ${colors.border} ${colors.bg}`}>
-                      <div className="flex justify-between items-center mb-2">
-                        <span className={`text-[9px] px-2 py-0.5 rounded-lg font-black uppercase tracking-wider ${colors.badge}`}>
-                          {sug.suggestion_type} task
-                        </span>
-                        <span className={`text-[9px] font-black font-mono tracking-wide ${
-                          theme === 'dark' ? 'text-slate-500' : 'text-slate-450'
-                        }`}>
-                          IMPACT TRIAGE
-                        </span>
-                      </div>
-                      
-                      <p className={`text-xs font-extrabold leading-relaxed mb-2 ${
-                        theme === 'dark' ? 'text-slate-300' : 'text-slate-700'
-                      }`}>
-                        {sug.description}
-                      </p>
-                      
-                      {sug.proposed_value && (
-                        <div className="mb-2">
-                          <div 
-                            onClick={() => toggleDetails(sug.id)}
-                            className={`flex items-center gap-1.5 py-1 px-1.5 rounded-lg text-[9px] font-extrabold uppercase tracking-wide cursor-pointer transition ${
-                              theme === 'dark' ? 'hover:bg-slate-950/50 text-slate-450' : 'hover:bg-slate-50 text-slate-600'
-                            }`}
-                          >
-                            <span className={`transform transition-transform duration-150 ${isDetailsExpanded ? 'rotate-90' : ''}`}>
-                              <svg className="w-2 h-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={4.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
-                            </span>
-                            <span className="text-violet-500">📁 proposed_changes</span>
-                          </div>
+              </div>
 
-                          {isDetailsExpanded && (
-                            <div className={`mt-1.5 rounded-xl border p-2.5 text-[10px] space-y-1.5 transition-all duration-300 animate-[fadeIn_0.2s_ease-out] ${
-                              theme === 'dark' 
-                                ? 'bg-slate-950/80 border-slate-850 text-slate-350 shadow-inner' 
-                                : 'bg-white border-slate-200 text-slate-655 shadow-inner'
-                            }`}>
-                              <div>
-                                <span className={`font-black ${theme === 'dark' ? 'text-slate-250' : 'text-slate-850'}`}>Title:</span> {sug.proposed_value.title}
-                              </div>
-                              {sug.proposed_value.detail && (
-                                <div className="line-clamp-3">
-                                  <span className={`font-black ${theme === 'dark' ? 'text-slate-250' : 'text-slate-855'}`}>Detail:</span> {sug.proposed_value.detail}
-                                </div>
-                              )}
-                              {sug.proposed_value.entities && sug.proposed_value.entities.length > 0 && (
-                                <div className={`flex flex-wrap gap-1 mt-1.5 pt-1.5 border-t ${
-                                  theme === 'dark' ? 'border-slate-900' : 'border-slate-100'
-                                }`}>
-                                  {sug.proposed_value.entities.map(e => (
-                                    <span key={e} className={`px-1.5 py-0.2 rounded-lg text-[8px] border font-bold ${
-                                      theme === 'dark' 
-                                        ? 'bg-slate-900 text-slate-400 border-slate-800' 
-                                        : 'bg-slate-50 text-slate-600 border-slate-150'
-                                    }`}>
-                                      {e}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          )}
+              {/* Suggestions deck */}
+              {msg.suggestions && msg.suggestions.length > 0 && (
+                <div className="pl-4 border-l-2 border-indigo-500/30 space-y-4 mt-2 max-w-[95%]">
+                  <div className={`text-[8px] font-bold uppercase tracking-widest ${
+                    theme === 'dark' ? 'text-indigo-400' : 'text-indigo-600'
+                  }`}>
+                    Proposed Technical Updates
+                  </div>
+                  {msg.suggestions.map((sug) => {
+                    const typeColors = theme === 'dark' 
+                      ? {
+                          add: { border: 'border-emerald-900/40 hover:border-emerald-700/60', bg: 'bg-emerald-950/10', text: 'text-emerald-350', badge: 'bg-emerald-950/85 text-emerald-400 border border-emerald-900/40' },
+                          modify: { border: 'border-amber-900/40 hover:border-amber-700/60', bg: 'bg-amber-950/10', text: 'text-amber-350', badge: 'bg-amber-950/85 text-amber-400 border border-amber-900/40' },
+                          remove: { border: 'border-rose-900/40 hover:border-rose-700/60', bg: 'bg-rose-950/10', text: 'text-rose-350', badge: 'bg-rose-950/85 text-rose-400 border border-rose-900/40' },
+                          flag: { border: 'border-purple-900/40 hover:border-purple-700/60', bg: 'bg-purple-950/10', text: 'text-purple-355', badge: 'bg-purple-950/85 text-purple-400 border border-purple-900/40' }
+                        }
+                      : {
+                          add: { border: 'border-emerald-200 hover:border-emerald-350', bg: 'bg-emerald-50/30', text: 'text-emerald-800', badge: 'bg-emerald-100 text-emerald-700 border border-emerald-200' },
+                          modify: { border: 'border-amber-200 hover:border-amber-350', bg: 'bg-amber-50/30', text: 'text-amber-800', badge: 'bg-amber-100 text-amber-700 border border-amber-200' },
+                          remove: { border: 'border-rose-200 hover:border-rose-350', bg: 'bg-rose-50/30', text: 'text-rose-800', badge: 'bg-rose-100 text-rose-700 border border-rose-200' },
+                          flag: { border: 'border-purple-200 hover:border-purple-350', bg: 'bg-purple-50/30', text: 'text-purple-800', badge: 'bg-purple-100 text-purple-755 border border-purple-200' }
+                        };
+                    const colors = typeColors[sug.suggestion_type] || typeColors.add;
+                    const isDetailsExpanded = expandedSuggestions[sug.id];
+                    
+                    return (
+                      <div key={sug.id} className={`border rounded-2xl p-4 transition-all duration-300 ${colors.border} ${colors.bg}`}>
+                        <div className="flex justify-between items-center mb-2.5">
+                          <span className={`text-[8px] px-2 py-0.5 rounded-lg font-bold uppercase tracking-wider ${colors.badge}`}>
+                            {sug.suggestion_type} task
+                          </span>
+                          <span className={`text-[8px] font-bold font-mono tracking-wide ${
+                            theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                          }`}>
+                            IMPACT TRIAGE
+                          </span>
                         </div>
-                      )}
-
-                      {/* Action buttons */}
-                      <div className="flex justify-end gap-2 text-[10px] pt-1">
-                        {sug.status === 'pending' ? (
-                          <>
-                            <button
-                              disabled={processingSuggestions[sug.id]}
-                              onClick={() => handleSkip(msg.id, sug.id)}
-                              className={`px-3 py-1.5 rounded-xl border font-black cursor-pointer transition hover:scale-105 active:scale-95 duration-150 ${
-                                theme === 'dark' 
-                                  ? 'border-slate-700 hover:bg-slate-800 text-slate-300 shadow-sm' 
-                                  : 'border-slate-300 hover:bg-slate-100 text-slate-600 shadow-sm'
+                        
+                        <p className={`text-xs font-bold leading-relaxed mb-3 ${
+                          theme === 'dark' ? 'text-slate-200' : 'text-slate-700'
+                        }`}>
+                          {sug.description}
+                        </p>
+                        
+                        {sug.proposed_value && (
+                          <div className="mb-3">
+                            <div 
+                              onClick={() => toggleDetails(sug.id)}
+                              className={`flex items-center gap-1.5 py-1 px-1.5 rounded-lg text-[9px] font-bold uppercase tracking-wide cursor-pointer transition ${
+                                theme === 'dark' ? 'hover:bg-slate-950/50 text-slate-400' : 'hover:bg-slate-50 text-slate-600'
                               }`}
                             >
-                              Skip
-                            </button>
-                            <button
-                              disabled={processingSuggestions[sug.id]}
-                              onClick={() => handleApply(msg.id, sug.id)}
-                              className="px-3.5 py-1.5 rounded-xl bg-indigo-600 text-white font-black hover:bg-indigo-500 transition flex items-center gap-1 shadow-lg shadow-indigo-600/10 hover:shadow-indigo-500/20 active:bg-indigo-700 hover:scale-105 active:scale-95 duration-150 cursor-pointer"
-                            >
-                              {processingSuggestions[sug.id] ? (
-                                <span className="animate-spin rounded-full h-2.5 w-2.5 border-t border-b border-white mr-0.5"></span>
-                              ) : null}
-                              Apply Changes
-                            </button>
-                          </>
-                        ) : sug.status === 'applied' ? (
-                          <span className={`inline-flex items-center font-black px-2.5 py-1.5 rounded-xl border shadow-sm transition-all duration-200 hover:scale-105 ${
-                            theme === 'dark' 
-                              ? 'text-emerald-400 bg-emerald-950/20 border-emerald-900/40 shadow-emerald-950/10' 
-                              : 'text-emerald-700 bg-emerald-50 border-emerald-200'
-                          }`}>
-                            ✓ Applied to System
-                          </span>
-                        ) : (
-                          <span className={`inline-flex items-center font-bold px-2.5 py-1.5 rounded-xl border ${
-                            theme === 'dark' 
-                              ? 'text-slate-500 bg-slate-950/30 border-slate-850' 
-                              : 'text-slate-500 bg-slate-100 border-slate-200'
-                          }`}>
-                            ✕ Skipped
-                          </span>
+                              <span className={`transform transition-transform duration-150 ${isDetailsExpanded ? 'rotate-90' : ''}`}>
+                                <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={4.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+                              </span>
+                              <span className="text-violet-450">📁 Proposed Details</span>
+                            </div>
+
+                            {isDetailsExpanded && (
+                              <div className={`mt-2 rounded-xl border p-3 text-[10px] space-y-2 transition-all duration-300 animate-[fadeIn_0.2s_ease-out] ${
+                                theme === 'dark' 
+                                  ? 'bg-slate-950 border-slate-850/80 text-slate-350 shadow-inner' 
+                                  : 'bg-white border-slate-200 text-slate-600 shadow-inner'
+                              }`}>
+                                <div>
+                                  <span className={`font-bold ${theme === 'dark' ? 'text-slate-200' : 'text-slate-850'}`}>Title:</span> {sug.proposed_value.title}
+                                </div>
+                                {sug.proposed_value.detail && (
+                                  <div className="leading-relaxed text-slate-400">
+                                    <span className={`font-bold ${theme === 'dark' ? 'text-slate-200' : 'text-slate-850'}`}>Detail:</span> {sug.proposed_value.detail}
+                                  </div>
+                                )}
+                                {sug.proposed_value.entities && sug.proposed_value.entities.length > 0 && (
+                                  <div className={`flex flex-wrap gap-1.5 mt-2 pt-2 border-t ${
+                                    theme === 'dark' ? 'border-slate-900' : 'border-slate-100'
+                                  }`}>
+                                    {sug.proposed_value.entities.map(e => (
+                                      <span key={e} className={`px-2 py-0.5 rounded-lg text-[8px] border font-bold ${
+                                        theme === 'dark' 
+                                          ? 'bg-slate-900 text-slate-400 border-slate-800' 
+                                          : 'bg-slate-50 text-slate-600 border-slate-150'
+                                      }`}>
+                                        {e}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         )}
+
+                        {/* Action buttons */}
+                        <div className="flex justify-end gap-2 text-[10px] pt-1">
+                          {sug.status === 'pending' ? (
+                            <>
+                              <button
+                                disabled={processingSuggestions[sug.id]}
+                                onClick={() => handleSkip(msg.id, sug.id)}
+                                className={`px-3 py-1.5 rounded-xl border font-bold cursor-pointer transition active:scale-95 duration-150 ${
+                                  theme === 'dark' 
+                                    ? 'border-slate-750 hover:bg-slate-800 text-slate-300' 
+                                    : 'border-slate-300 hover:bg-slate-100 text-slate-600'
+                                }`}
+                              >
+                                Skip
+                              </button>
+                              <button
+                                disabled={processingSuggestions[sug.id]}
+                                onClick={() => handleApply(msg.id, sug.id)}
+                                className="px-3.5 py-1.5 rounded-xl bg-indigo-600 text-white font-bold hover:bg-indigo-500 transition flex items-center gap-1.5 active:bg-indigo-700 active:scale-95 duration-150 cursor-pointer"
+                              >
+                                {processingSuggestions[sug.id] ? (
+                                  <span className="animate-spin rounded-full h-2.5 w-2.5 border-t border-b border-white mr-0.5"></span>
+                                ) : null}
+                                Apply Changes
+                              </button>
+                            </>
+                          ) : sug.status === 'applied' ? (
+                            <span className={`inline-flex items-center font-bold px-3 py-1.5 rounded-xl border transition-all duration-200 ${
+                              theme === 'dark' 
+                                ? 'text-emerald-400 bg-emerald-950/20 border-emerald-900/40' 
+                                : 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                            }`}>
+                              ✓ Applied to System
+                            </span>
+                          ) : (
+                            <span className={`inline-flex items-center font-bold px-3 py-1.5 rounded-xl border ${
+                              theme === 'dark' 
+                                ? 'text-slate-550 bg-slate-950/30 border-slate-850' 
+                                : 'text-slate-550 bg-slate-100 border-slate-200'
+                            }`}>
+                              ✕ Skipped
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        ))}
-        {loading && (
-          <div className="flex justify-start">
-            <div className={`border rounded-2xl rounded-bl-none px-3.5 py-2.5 text-xs flex items-center gap-2.5 shadow-sm transition-colors duration-300 ${
-              theme === 'dark' 
-                ? 'bg-slate-955/50 border-slate-800/80 text-slate-400' 
-                : 'bg-slate-50 border-slate-150 text-slate-600'
-            }`}>
-              <span className="flex space-x-1">
-                <span className="h-1.5 w-1.5 bg-slate-500 rounded-full animate-bounce [animation-duration:0.8s]"></span>
-                <span className="h-1.5 w-1.5 bg-slate-500 rounded-full animate-bounce [animation-duration:0.8s] [animation-delay:0.2s]"></span>
-                <span className="h-1.5 w-1.5 bg-slate-500 rounded-full animate-bounce [animation-duration:0.8s] [animation-delay:0.4s]"></span>
-              </span>
-              <span className="font-semibold tracking-wide">Analyzing scope impact...</span>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-          </div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
+          ))}
+          {loading && (
+            <div className="flex justify-start">
+              <div className={`border rounded-2xl rounded-bl-none px-4 py-3 text-xs flex items-center gap-2.5 transition-colors duration-300 ${
+                theme === 'dark' 
+                  ? 'bg-slate-950/30 border-slate-850 text-slate-400' 
+                  : 'bg-slate-50 border-slate-150 text-slate-600'
+              }`}>
+                <span className="flex space-x-1">
+                  <span className="h-1.5 w-1.5 bg-indigo-500 rounded-full animate-bounce [animation-duration:0.8s]"></span>
+                  <span className="h-1.5 w-1.5 bg-indigo-500 rounded-full animate-bounce [animation-duration:0.8s] [animation-delay:0.2s]"></span>
+                  <span className="h-1.5 w-1.5 bg-indigo-500 rounded-full animate-bounce [animation-duration:0.8s] [animation-delay:0.4s]"></span>
+                </span>
+                <span className="font-bold tracking-wide text-indigo-400">Analyzing scope impact...</span>
+              </div>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
 
-      {/* Interactive Quick Action Pills Deck */}
-      <div className={`px-4 py-2 border-t flex flex-wrap gap-2 transition-colors ${
-        theme === 'dark' ? 'border-slate-850 bg-slate-900/60' : 'border-slate-150 bg-slate-50/50'
-      }`}>
-        {quickActions.map(action => (
-          <button
-            key={action.label}
-            onClick={() => executeCommand(action.text)}
-            disabled={loading}
-            className={`text-[9px] font-black tracking-wide uppercase px-2.5 py-1 rounded-lg border transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer ${
-              theme === 'dark'
-                ? 'bg-slate-950 border-slate-800 hover:border-slate-700 text-indigo-300 hover:text-indigo-200 hover:bg-slate-900 shadow-md shadow-slate-950/20'
-                : 'bg-white border-slate-205 hover:border-slate-300 text-indigo-650 hover:text-indigo-755 shadow-sm'
+        {/* Interactive Quick Action Pills Deck */}
+        <div className={`px-4 py-2.5 border-t flex flex-wrap gap-2 transition-colors ${
+          theme === 'dark' ? 'border-slate-850 bg-slate-900/40' : 'border-slate-150 bg-slate-50/50'
+        }`}>
+          {quickActions.map(action => (
+            <button
+              key={action.label}
+              onClick={() => executeCommand(action.text)}
+              disabled={loading}
+              className={`text-[9px] font-bold tracking-wide uppercase px-3 py-1.5 rounded-lg border transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer ${
+                theme === 'dark'
+                  ? 'bg-slate-950 border-slate-850 hover:border-slate-700 text-indigo-300 hover:text-indigo-200 hover:bg-slate-900'
+                  : 'bg-white border-slate-200 hover:border-slate-300 text-indigo-600 hover:text-indigo-700'
+              }`}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Input Message Form */}
+        <form onSubmit={handleSend} className={`flex gap-2.5 p-4 border-t transition-colors ${
+          theme === 'dark' ? 'border-slate-850 bg-slate-950/45' : 'border-slate-200 bg-slate-50'
+        }`}>
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Describe a change (e.g. 'Add Google OAuth login')..."
+            className={`border p-3.5 flex-1 rounded-xl text-xs transition-all focus:outline-none focus:ring-1 focus:ring-indigo-500/80 ${
+              theme === 'dark' 
+                ? 'bg-slate-950 border-slate-850/60 text-white placeholder-slate-600 focus:border-slate-700 focus:ring-indigo-500' 
+                : 'bg-white border-slate-250 text-slate-900 placeholder-slate-400 focus:border-indigo-500'
             }`}
+            disabled={loading}
+          />
+          <button
+            type="submit"
+            disabled={loading || !input.trim()}
+            className="bg-indigo-600 text-white font-bold uppercase tracking-wider px-5 py-3.5 rounded-xl text-xs hover:bg-indigo-500 active:bg-indigo-700 transition disabled:opacity-50 disabled:cursor-not-allowed transform hover:-translate-y-0.5 active:translate-y-0 duration-150 cursor-pointer"
           >
-            {action.label}
+            Send
           </button>
-        ))}
+        </form>
       </div>
-
-      {/* Input Message Form */}
-      <form onSubmit={handleSend} className={`flex gap-2 p-3 border-t transition-colors ${
-        theme === 'dark' ? 'border-slate-850 bg-slate-950/45' : 'border-slate-200 bg-slate-50'
-      }`}>
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Describe a change (e.g. 'Add Google OAuth login')..."
-          className={`border p-2.5 flex-1 rounded-xl text-xs transition-all focus:outline-none focus:ring-1 focus:ring-indigo-500/80 ${
-            theme === 'dark' 
-              ? 'bg-slate-950 border-slate-850/60 text-white placeholder-slate-600 focus:border-slate-700' 
-              : 'bg-white border-slate-250 text-slate-900 placeholder-slate-400 shadow-inner focus:border-slate-350'
-          }`}
-          disabled={loading}
-        />
-        <button
-          type="submit"
-          disabled={loading || !input.trim()}
-          className="bg-indigo-600 text-white font-extrabold px-4.5 py-2.5 rounded-xl text-xs hover:bg-indigo-500 active:bg-indigo-700 transition disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-indigo-600/10 hover:shadow-indigo-500/20 active:shadow-indigo-750/30 transform hover:-translate-y-0.5 active:translate-y-0 duration-150 cursor-pointer"
-        >
-          Send
-        </button>
-      </form>
     </div>
   );
 }
