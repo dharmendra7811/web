@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from 'react';
-import { updateTodo, deleteTodo, Todo } from '@/lib/api';
+import { updateTodo, deleteTodo, syncTodoToRedmine, Todo } from '@/lib/api';
 
 interface TodoItemProps {
   todo: Todo;
@@ -115,6 +115,21 @@ export default function TodoItem({ todo, featureId }: TodoItemProps) {
               className={`text-red-500 hover:text-red-700 ${deleting ? 'opacity-50' : ''}`}
             >
               {deleting ? 'Deleting...' : 'Delete'}
+            </button>
+          )}
+          {!editing && todo.ticket_adapter === 'redmine' && (
+            <button
+              onClick={async () => {
+                try {
+                  await syncTodoToRedmine(todo.id);
+                  alert('Todo synced to Redmine!');
+                } catch (err: any) {
+                  alert(`Sync failed: ${err.message}`);
+                }
+              }}
+              className="text-orange-500 hover:text-orange-700"
+            >
+              Sync to Redmine
             </button>
           )}
         </div>

@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS projects (
   name          TEXT NOT NULL,
   prd_text      TEXT,
   summary       TEXT,
+  redmine_project_identifier TEXT,  -- Which Redmine project this syncs to
   created_at    TIMESTAMPTZ DEFAULT now(),
   updated_at    TIMESTAMPTZ DEFAULT now()
 );
@@ -22,6 +23,9 @@ CREATE TABLE IF NOT EXISTS features (
   -- status values: draft | ready | in_progress | done
   order_index   INTEGER   DEFAULT 0,
   human_locked  BOOLEAN   DEFAULT false,
+  ticket_id     TEXT,
+  ticket_adapter TEXT,
+  -- ticket_adapter values: linear | jira | github | redmine
   created_at    TIMESTAMPTZ DEFAULT now(),
   updated_at    TIMESTAMPTZ DEFAULT now()
 );
@@ -44,7 +48,7 @@ CREATE TABLE IF NOT EXISTS todos (
   human_locked  BOOLEAN   DEFAULT false,
   ticket_id     TEXT,
   ticket_adapter TEXT,
-  -- ticket_adapter values: linear | jira | github
+  -- ticket_adapter values: linear | jira | github | redmine
   created_at    TIMESTAMPTZ DEFAULT now(),
   updated_at    TIMESTAMPTZ DEFAULT now()
 );

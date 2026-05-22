@@ -64,6 +64,61 @@ const openai = new OpenAI({
   }
 });
 
+// Redmine Configuration
+const REDMINE_URL = process.env.REDMINE_URL || 'http://localhost:3001';
+const REDMINE_API_KEY = process.env.REDMINE_API_KEY;
+const REDMINE_PROJECT_IDENTIFIER = process.env.REDMINE_PROJECT_IDENTIFIER || 'requirements-os';
+const REDMINE_FEATURE_TRACKER_ID = parseInt(process.env.REDMINE_FEATURE_TRACKER_ID || '2');
+const REDMINE_TODO_TRACKER_ID = parseInt(process.env.REDMINE_TODO_TRACKER_ID || '1');
+
+// Redmine API Helper
+async function redmineRequest(endpoint, method = 'GET', data = null) {
+  const url = `${REDMINE_URL}/${endpoint}.json`;
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-Redmine-API-Key': REDMINE_API_KEY,
+  };
+
+  const options = {
+    method,
+    headers,
+  };
+
+  if (data && (method === 'POST' || method === 'PUT')) {
+    options.body = JSON.stringify(data);
+  }
+
+  const response = await fetch(url, options);
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Redmine API error: ${response.status} ${errorText}`);
+  }
+
+  return response.json();
+}
+
+// Create or update a Redmine issue
+async function syncToRedmine(issue) {
+  // issue: { subject, description, tracker_id, status_id, parent_issue_id, custom_fields }
+  if (!REDMINE_API_KEY) {
+    throw new Error('Redmine API key not configured');
+  }
+
+  const payload = { issue };
+  
+  // Check if issue already exists (by checking ticket_id)
+  if (issue.id) {
+    // Update existing issue
+    const result = await redmineRequest(`issues/${issue.id}`, 'PUT', payload);
+    return result;
+  } else {
+    // Create new issue
+    const result = await redmineRequest('issues', 'POST', payload);
+    return result;
+  }
+}
+
 // Helper function to run queries
 const query = (text, params) => pool.query(text, params);
 
@@ -1445,6 +1500,354 @@ server.get('/api/projects/:id/graph', async (request, reply) => {
 
   return { elements };
 });
+
+// ==================== Redmine Sync Endpoints ====================
+
+// Helper: Map requirements-os status to Redmine status ID
+function mapStatusToRedmine(status) {
+  // Default Redmine statuses: 1=New, 2=In Progress, 3=Resolved, 4=Feedback, 5=Closed, 6=Rejected
+  const mapping = {
+    'draft': 1,
+    'ready': 1,
+    'in_progress': 2,
+    'done': 5,
+    'open': 1,
+    'blocked': 1,
+  };
+  return mapping[status] || 1;
+}
+
+// Helper: Map Redmine status ID to requirements-os status
+function mapStatusFromRedmine(redmineStatusId) {
+  const mapping = {
+    1: 'open',
+    2: 'in_progress',
+    3: 'in_progress',
+    4: 'open',
+    5: 'done',
+    6: 'open',
+  };
+  return mapping[redmineStatusId] || 'open';
+}
+
+// Helper: Get Redmine project identifier for a project
+async function getRedmineProjectId(projectId) {
+  // First check if project has a specific Redmine project set
+  const projectRes = await query('SELECT redmine_project_identifier FROM projects WHERE id = $1', [projectId]);
+  if (projectRes.rows.length > 0 && projectRes.rows[0].redmine_project_identifier) {
+    return projectRes.rows[0].redmine_project_identifier;
+  }
+  // Fall back to global config
+  return REDMINE_PROJECT_IDENTIFIER;
+}
+
+// POST /api/projects/:id/sync/redmine - Sync all features and todos to Redmine
+server.post('/api/projects/:id/sync/redmine', async (request, reply) => {
+  const { id } = request.params;
+
+  try {
+    // Get project with features and todos
+    const projectRes = await query('SELECT * FROM projects WHERE id = $1', [id]);
+    if (projectRes.rows.length === 0) {
+      return reply.code(404).send({ error: 'Project not found' });
+    }
+
+    const featuresRes = await query('SELECT * FROM features WHERE project_id = $1 ORDER BY order_index', [id]);
+    const features = featuresRes.rows;
+
+    // Get Redmine project ID for this project
+    const redmineProjectId = await getRedmineProjectId(id);
+
+    const results = {
+      features: [],
+      todos: [],
+      errors: [],
+    };
+
+    // Sync each feature
+    for (const feature of features) {
+      try {
+        const todosRes = await query('SELECT * FROM todos WHERE feature_id = $1 ORDER BY order_index', [feature.id]);
+        const todos = todosRes.rows;
+
+        // Create/update feature in Redmine
+        const featurePayload = {
+          issue: {
+            project_id: redmineProjectId,
+            subject: feature.title,
+            description: feature.description || '',
+            tracker_id: REDMINE_FEATURE_TRACKER_ID, // Feature tracker in Redmine
+            status_id: mapStatusToRedmine(feature.status),
+          }
+        };
+
+        let redmineIssueId;
+        if (feature.ticket_id && feature.ticket_adapter === 'redmine') {
+          try {
+            // Update existing
+            await redmineRequest(`issues/${feature.ticket_id}`, 'PUT', featurePayload);
+            redmineIssueId = feature.ticket_id;
+          } catch (err) {
+            // If issue doesn't exist in Redmine (404), create new one
+            if (err.message.includes('404')) {
+              const result = await redmineRequest('issues', 'POST', featurePayload);
+              redmineIssueId = result.issue.id;
+              // Update our DB with new ticket_id
+              await query('UPDATE features SET ticket_id = $1, ticket_adapter = $2 WHERE id = $3', [redmineIssueId.toString(), 'redmine', feature.id]);
+            } else {
+              throw err; // Re-throw if it's not a 404
+            }
+          }
+        } else {
+          // Create new
+          const result = await redmineRequest('issues', 'POST', featurePayload);
+          redmineIssueId = result.issue.id;
+          // Update our DB
+          await query('UPDATE features SET ticket_id = $1, ticket_adapter = $2 WHERE id = $3', [redmineIssueId.toString(), 'redmine', feature.id]);
+        }
+
+        results.features.push({ id: feature.id, redmine_issue_id: redmineIssueId, title: feature.title });
+
+        // Sync todos for this feature
+        for (const todo of todos) {
+          try {
+            const todoPayload = {
+              issue: {
+                project_id: redmineProjectId,
+                subject: todo.title,
+                description: todo.detail || '',
+                tracker_id: REDMINE_TODO_TRACKER_ID, // Todo tracker in Redmine
+                status_id: mapStatusToRedmine(todo.status),
+                parent_issue_id: redmineIssueId, // Link to feature's issue
+              }
+            };
+
+            let todoRedmineId;
+            if (todo.ticket_id && todo.ticket_adapter === 'redmine') {
+              try {
+                await redmineRequest(`issues/${todo.ticket_id}`, 'PUT', todoPayload);
+                todoRedmineId = todo.ticket_id;
+              } catch (err) {
+                // If issue doesn't exist in Redmine (404), create new one
+                if (err.message.includes('404')) {
+                  const result = await redmineRequest('issues', 'POST', todoPayload);
+                  todoRedmineId = result.issue.id;
+                  await query('UPDATE todos SET ticket_id = $1, ticket_adapter = $2 WHERE id = $3', [todoRedmineId.toString(), 'redmine', todo.id]);
+                } else {
+                  throw err; // Re-throw if it's not a 404
+                }
+              }
+            } else {
+              const result = await redmineRequest('issues', 'POST', todoPayload);
+              todoRedmineId = result.issue.id;
+              await query('UPDATE todos SET ticket_id = $1, ticket_adapter = $2 WHERE id = $3', [todoRedmineId.toString(), 'redmine', todo.id]);
+            }
+
+            results.todos.push({ id: todo.id, redmine_issue_id: todoRedmineId, title: todo.title });
+          } catch (err) {
+            results.errors.push(`Todo ${todo.id}: ${err.message}`);
+          }
+        }
+      } catch (err) {
+        results.errors.push(`Feature ${feature.id}: ${err.message}`);
+      }
+    }
+
+    return { success: true, ...results };
+  } catch (err) {
+    request.log.error(err);
+    return reply.code(500).send({ error: 'Sync failed', details: err.message });
+  }
+});
+
+// POST /api/features/:id/sync/redmine - Sync single feature
+server.post('/api/features/:id/sync/redmine', async (request, reply) => {
+  const { id } = request.params;
+
+  try {
+    const featureRes = await query('SELECT * FROM features WHERE id = $1', [id]);
+    if (featureRes.rows.length === 0) {
+      return reply.code(404).send({ error: 'Feature not found' });
+    }
+    const feature = featureRes.rows[0];
+
+    // Get Redmine project ID for this feature's project
+    const redmineProjectId = await getRedmineProjectId(feature.project_id);
+
+    const featurePayload = {
+      issue: {
+        project_id: redmineProjectId,
+        subject: feature.title,
+        description: feature.description || '',
+        tracker_id: REDMINE_FEATURE_TRACKER_ID,
+        status_id: mapStatusToRedmine(feature.status),
+      }
+    };
+
+    let redmineIssueId;
+    if (feature.ticket_id && feature.ticket_adapter === 'redmine') {
+      try {
+        await redmineRequest(`issues/${feature.ticket_id}`, 'PUT', featurePayload);
+        redmineIssueId = feature.ticket_id;
+      } catch (err) {
+        // If issue doesn't exist in Redmine (404), create new one
+        if (err.message.includes('404')) {
+          const result = await redmineRequest('issues', 'POST', featurePayload);
+          redmineIssueId = result.issue.id;
+          await query('UPDATE features SET ticket_id = $1, ticket_adapter = $2 WHERE id = $3', [redmineIssueId.toString(), 'redmine', id]);
+        } else {
+          throw err;
+        }
+      }
+    } else {
+      const result = await redmineRequest('issues', 'POST', featurePayload);
+      redmineIssueId = result.issue.id;
+      await query('UPDATE features SET ticket_id = $1, ticket_adapter = $2 WHERE id = $3', [redmineIssueId.toString(), 'redmine', id]);
+    }
+
+    return { success: true, feature_id: id, redmine_issue_id: redmineIssueId };
+  } catch (err) {
+    request.log.error(err);
+    return reply.code(500).send({ error: 'Sync failed', details: err.message });
+  }
+});
+
+// POST /api/todos/:id/sync/redmine - Sync single todo
+server.post('/api/todos/:id/sync/redmine', async (request, reply) => {
+  const { id } = request.params;
+
+  try {
+    const todoRes = await query('SELECT * FROM todos WHERE id = $1', [id]);
+    if (todoRes.rows.length === 0) {
+      return reply.code(404).send({ error: 'Todo not found' });
+    }
+    const todo = todoRes.rows[0];
+
+    // Get parent feature for parent_issue_id
+    const featureRes = await query('SELECT * FROM features WHERE id = $1', [todo.feature_id]);
+    const feature = featureRes.rows[0];
+
+    // Get Redmine project ID for this todo's project
+    const redmineProjectId = await getRedmineProjectId(todo.project_id);
+
+    const todoPayload = {
+      issue: {
+        project_id: redmineProjectId,
+        subject: todo.title,
+        description: todo.detail || '',
+        tracker_id: REDMINE_TODO_TRACKER_ID,
+        status_id: mapStatusToRedmine(todo.status),
+        parent_issue_id: (feature && feature.ticket_id && feature.ticket_adapter === 'redmine') ? parseInt(feature.ticket_id) : undefined,
+      }
+    };
+
+    let redmineIssueId;
+    if (todo.ticket_id && todo.ticket_adapter === 'redmine') {
+      try {
+        await redmineRequest(`issues/${todo.ticket_id}`, 'PUT', todoPayload);
+        redmineIssueId = todo.ticket_id;
+      } catch (err) {
+        // If issue doesn't exist in Redmine (404), create new one
+        if (err.message.includes('404')) {
+          const result = await redmineRequest('issues', 'POST', todoPayload);
+          redmineIssueId = result.issue.id;
+          await query('UPDATE todos SET ticket_id = $1, ticket_adapter = $2 WHERE id = $3', [redmineIssueId.toString(), 'redmine', id]);
+        } else {
+          throw err;
+        }
+      }
+    } else {
+      const result = await redmineRequest('issues', 'POST', todoPayload);
+      redmineIssueId = result.issue.id;
+      await query('UPDATE todos SET ticket_id = $1, ticket_adapter = $2 WHERE id = $3', [redmineIssueId.toString(), 'redmine', id]);
+    }
+
+    return { success: true, todo_id: id, redmine_issue_id: redmineIssueId };
+  } catch (err) {
+    request.log.error(err);
+    return reply.code(500).send({ error: 'Sync failed', details: err.message });
+  }
+});
+
+// ==================== Redmine Project Management ====================
+
+// GET /api/redmine/projects - List available Redmine projects
+// Optionally filter by requirements-os project ID
+server.get('/api/redmine/projects', async (request, reply) => {
+  const { project_id } = request.query;
+  
+  try {
+    let redmineProjectId;
+    if (project_id) {
+      redmineProjectId = await getRedmineProjectId(project_id);
+    }
+    
+    const result = await redmineRequest('projects', 'GET');
+    return { 
+      projects: result.projects || [],
+      current_project: redmineProjectId || REDMINE_PROJECT_IDENTIFIER,
+    };
+  } catch (err) {
+    return reply.code(500).send({ error: 'Failed to list Redmine projects', details: err.message });
+  }
+});
+
+// PUT /api/projects/:id/redmine-project - Set which Redmine project to sync to
+server.put('/api/projects/:id/redmine-project', async (request, reply) => {
+  const { id } = request.params;
+  const { redmine_project_identifier } = request.body;
+
+  try {
+    const projectRes = await query('SELECT * FROM projects WHERE id = $1', [id]);
+    if (projectRes.rows.length === 0) {
+      return reply.code(404).send({ error: 'Project not found' });
+    }
+
+    await query('UPDATE projects SET redmine_project_identifier = $1, updated_at = NOW() WHERE id = $2', 
+      [redmine_project_identifier || null, id]);
+
+    return { success: true, redmine_project_identifier };
+  } catch (err) {
+    request.log.error(err);
+    return reply.code(500).send({ error: 'Failed to set Redmine project', details: err.message });
+  }
+});
+
+// Update redmine/status to accept optional project_id
+server.get('/api/redmine/status', async (request, reply) => {
+  const { project_id } = request.query;
+  
+  if (!REDMINE_API_KEY) {
+    return { configured: false, message: 'Redmine API key not set' };
+  }
+  
+  try {
+    let checkProject = REDMINE_PROJECT_IDENTIFIER;
+    if (project_id) {
+      checkProject = await getRedmineProjectId(project_id);
+    }
+    
+    const result = await redmineRequest('projects/' + checkProject);
+    return { 
+      configured: true, 
+      connected: true, 
+      project: result.project?.name || checkProject,
+      url: REDMINE_URL,
+      redmine_project_identifier: checkProject,
+    };
+  } catch (err) {
+    return { 
+      configured: true, 
+      connected: false, 
+      error: err.message,
+      redmine_project_identifier: project_id ? await getRedmineProjectId(project_id) : REDMINE_PROJECT_IDENTIFIER,
+    };
+  }
+});
+
+// ==================== End Redmine Project Management ====================
+
+// ==================== End Redmine Sync ====================
 
 // Start the server
 const start = async () => {

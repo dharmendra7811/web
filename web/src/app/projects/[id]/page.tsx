@@ -9,7 +9,7 @@ import FolderTree from '@/app/components/features/FolderTree';
 import ChatPanel from '@/app/components/chat/ChatPanel';
 import GraphView from '@/app/components/graph/GraphView';
 import ProjectHeader from '@/app/components/layout/ProjectHeader';
-import { getProject, updateProjectPRD } from '@/lib/api';
+import { getProject, updateProjectPRD, syncProjectToRedmine, getRedmineStatus, getRedmineProjects, setRedmineProject } from '@/lib/api';
 
 export default function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -21,6 +21,12 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
   // Theme state: default to dark, save/load from localStorage
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
+
+  // Redmine sync state
+  const [redmineStatus, setRedmineStatus] = useState<any>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [redmineProjects, setRedmineProjects] = useState<any[]>([]);
+  const [selectedRedmineProject, setSelectedRedmineProject] = useState<string>('');
 
   useEffect(() => {
     // Load theme from localStorage
@@ -81,6 +87,71 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     }
   };
 
+  // Redmine status check on mount
+  useEffect(() => {
+    checkRedmineStatus();
+  }, [id]);
+
+  const checkRedmineStatus = async () => {
+    try {
+      const status = await getRedmineStatus(id);
+      setRedmineStatus(status);
+    } catch (err) {
+      console.error('Failed to check Redmine status:', err);
+    }
+  };
+
+  const handleSyncToRedmine = async () => {
+    setSyncing(true);
+    try {
+      const result = await syncProjectToRedmine(id);
+      alert(`Successfully synced to Redmine! Synced ${result.features?.length || 0} features and ${result.todos?.length || 0} todos.`);
+      await checkRedmineStatus();
+    } catch (err: any) {
+      alert(`Sync failed: ${err.message}`);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  // Load available Redmine projects
+  const loadRedmineProjects = async () => {
+    try {
+      const data = await getRedmineProjects(id);
+      setRedmineProjects(data.projects || []);
+      // If a Redmine project is already set for this project, pre-select it
+      if (data.current_project) {
+        setSelectedRedmineProject(data.current_project);
+      }
+    } catch (err) {
+      console.error('Failed to load Redmine projects:', err);
+    }
+  };
+
+  // Load current Redmine project setting for this project
+  useEffect(() => {
+    if (project?.redmine_project_identifier) {
+      setSelectedRedmineProject(project.redmine_project_identifier);
+    }
+    loadRedmineProjects();
+  }, [id, project?.redmine_project_identifier]);
+
+  // Set Redmine project for this requirements-os project
+  const handleSetRedmineProject = async () => {
+    if (!selectedRedmineProject) {
+      alert('Please select a Redmine project');
+      return;
+    }
+    try {
+      await setRedmineProject(id, selectedRedmineProject);
+      alert(`Redmine project set to: ${selectedRedmineProject}`);
+      await loadProject(); // Reload project to get updated setting
+      await checkRedmineStatus(); // Refresh status with new project
+    } catch (err: any) {
+      alert(`Failed to set Redmine project: ${err.message}`);
+    }
+  };
+
   if (loading && !project) {
     return (
       <div className={`min-h-screen flex flex-col items-center justify-center p-4 transition-colors duration-300 ${theme === 'dark' ? 'bg-slate-950 text-slate-100' : 'bg-slate-100 text-slate-800'
@@ -138,6 +209,56 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                 </svg>
               )}
             </button>
+
+            {/* Redmine Sync Button */}
+            {redmineStatus?.configured && (
+              <button
+                onClick={handleSyncToRedmine}
+                disabled={syncing}
+                className={`p-2.5 rounded-xl border cursor-pointer shadow-sm hover:scale-105 active:scale-95 transition-all duration-200 flex items-center gap-2
+                  ${syncing ? 'opacity-50 cursor-not-allowed' : ''}
+                  ${theme === 'dark'
+                    ? 'bg-slate-800 border-slate-700/85 text-orange-400 hover:text-orange-300 hover:bg-slate-750'
+                    : 'bg-white border-slate-200 text-orange-600 hover:text-orange-700 hover:bg-slate-50'
+                  }`}
+                title="Sync to Redmine"
+              >
+                {syncing ? (
+                  <div className="w-4 h-4 border-2 border-t-orange-400 rounded-full animate-spin" />
+                ) : (
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.953 8.953 0 0112 21c-4.478 0-8.268-2.943-9.542-7h5.742m-5.742 7H4m12-12h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                )}
+                <span className="text-xs font-bold">Sync to Redmine</span>
+              </button>
+            )}
+
+            {/* Redmine Project Configuration */}
+            {redmineStatus?.configured && (
+              <div className={`flex items-center gap-2 p-2.5 rounded-xl border text-xs ${theme === 'dark' ? 'bg-slate-800 border-slate-700/85' : 'bg-white border-slate-200'}`}>
+                <span className="text-slate-500">Syncing to:</span>
+                <select
+                  value={selectedRedmineProject}
+                  onChange={(e) => setSelectedRedmineProject(e.target.value)}
+                  className="text-xs p-1 border rounded bg-transparent"
+                >
+                  <option value="">-- Select Redmine Project --</option>
+                  {redmineProjects.map((p: any) => (
+                    <option key={p.identifier} value={p.identifier}>{p.name} ({p.identifier})</option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleSetRedmineProject}
+                  className="px-2 py-1 bg-orange-500 text-white rounded hover:bg-orange-600 text-xs"
+                >
+                  Save
+                </button>
+                {selectedRedmineProject && (
+                  <span className="text-xs text-green-600">✓ {selectedRedmineProject}</span>
+                )}
+              </div>
+            )}
 
             {/* Premium View Selector Toggles */}
             <div className={`flex items-center p-1.5 rounded-xl border shadow-inner transition-colors duration-300 ${theme === 'dark' ? 'bg-slate-950 border-slate-800/60' : 'bg-slate-100 border-slate-200'

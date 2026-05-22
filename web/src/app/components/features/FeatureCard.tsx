@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from 'react';
-import { updateFeature, deleteFeature, Feature, getTodos } from '@/lib/api';
+import { updateFeature, deleteFeature, Feature, getTodos, syncFeatureToRedmine } from '@/lib/api';
 import TodoItem from '@/app/components/features/TodoItem';
 
 interface FeatureCardProps {
@@ -98,6 +98,21 @@ export default function FeatureCard({ feature }: FeatureCardProps) {
               className={`text-red-500 hover:text-red-700 ${deleting ? 'opacity-50' : ''}`}
             >
               {deleting ? 'Deleting...' : 'Delete'}
+            </button>
+          )}
+          {!editing && feature.ticket_adapter === 'redmine' && (
+            <button
+              onClick={async () => {
+                try {
+                  await syncFeatureToRedmine(feature.id);
+                  alert('Feature synced to Redmine!');
+                } catch (err: any) {
+                  alert(`Sync failed: ${err.message}`);
+                }
+              }}
+              className="text-orange-500 hover:text-orange-700"
+            >
+              Sync to Redmine
             </button>
           )}
           {editing && (

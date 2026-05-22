@@ -253,6 +253,8 @@ export interface Feature {
   status: 'draft' | 'ready' | 'in_progress' | 'done';
   order_index: number;
   human_locked: boolean;
+  ticket_id?: string;
+  ticket_adapter?: 'linear' | 'jira' | 'github' | 'redmine';
   created_at: string;
   updated_at: string;
 }
@@ -269,7 +271,73 @@ export interface Todo {
   order_index: number;
   human_locked: boolean;
   ticket_id?: string;
-  ticket_adapter?: 'linear' | 'jira' | 'github';
+  ticket_adapter?: 'linear' | 'jira' | 'github' | 'redmine';
   created_at?: string;
   updated_at?: string;
+}
+
+// ==================== Redmine API Functions ====================
+
+export async function getRedmineStatus(projectId?: string) {
+  const url = projectId 
+    ? `${API_URL}/api/redmine/status?project_id=${projectId}`
+    : `${API_URL}/api/redmine/status`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Failed to get Redmine status');
+  return res.json();
+}
+
+export async function syncProjectToRedmine(projectId: string) {
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/sync/redmine`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to sync project to Redmine');
+  }
+  return res.json();
+}
+
+export async function syncFeatureToRedmine(featureId: string) {
+  const res = await fetch(`${API_URL}/api/features/${featureId}/sync/redmine`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to sync feature to Redmine');
+  }
+  return res.json();
+}
+
+export async function syncTodoToRedmine(todoId: string) {
+  const res = await fetch(`${API_URL}/api/todos/${todoId}/sync/redmine`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to sync todo to Redmine');
+  }
+  return res.json();
+}
+
+export async function getRedmineProjects(projectId?: string) {
+  const url = projectId 
+    ? `${API_URL}/api/redmine/projects?project_id=${projectId}`
+    : `${API_URL}/api/redmine/projects`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Failed to list Redmine projects');
+  return res.json();
+}
+
+export async function setRedmineProject(projectId: string, redmineProjectIdentifier: string) {
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/redmine-project`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ redmine_project_identifier: redmineProjectIdentifier }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to set Redmine project');
+  }
+  return res.json();
 }
