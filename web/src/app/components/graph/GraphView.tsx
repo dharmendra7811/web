@@ -1,171 +1,163 @@
 "use client";
 
-import { useState, useEffect, useCallback } from 'react';
-import {
-  ReactFlow,
-  MiniMap,
-  Controls,
-  Background,
-  useNodesState,
-  useEdgesState,
-  Handle,
-  Position,
-  Node,
-  Edge
-} from '@xyflow/react';
-import '@xyflow/react/dist/style.css';
-import { getGraphData } from '@/lib/api';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import dynamic from 'next/dynamic';
+import cytoscape from 'cytoscape';
+
+// Track dagre registration outside of cytoscape type
+let dagreRegistered = false;
+
+// Dynamically register dagre to avoid TypeScript declaration issues
+const loadDagre = async () => {
+  if (!dagreRegistered) {
+    const dagre = await import('cytoscape-dagre');
+    cytoscape.use(dagre.default || dagre);
+    dagreRegistered = true;
+  }
+};
+
+const CytoscapeComponent = dynamic(() => import('react-cytoscapejs'), { ssr: false });
 
 interface GraphViewProps {
   projectId: string;
 }
 
-// Per-layer visual config
-const layerConfig: Record<string, { border: string; bg: string; badge: string; label: string }> = {
-  capability: { border: 'border-blue-500', bg: 'bg-blue-50/80', badge: 'bg-blue-100 text-blue-700', label: 'Capability' },
-  service:    { border: 'border-emerald-500', bg: 'bg-emerald-50/70', badge: 'bg-emerald-100 text-emerald-700', label: 'Service' },
-  risk:       { border: 'border-red-500', bg: 'bg-red-50/80', badge: 'bg-red-100 text-red-700', label: 'Risk' },
-  infra:      { border: 'border-amber-500', bg: 'bg-amber-50/70', badge: 'bg-amber-100 text-amber-700', label: 'Infra' },
-  execution:  { border: 'border-violet-500', bg: 'bg-violet-50/70', badge: 'bg-violet-100 text-violet-700', label: 'Execution' },
-};
-
-function layerStyle(type: string) {
-  return layerConfig[type] || layerConfig.service;
-}
-
-// Feature-level node (capability / service / risk)
-const FeatureNode = ({ data }: any) => {
-  const style = layerStyle(data.graph_type);
-  const isLowConfidence = data.confidence != null && data.confidence < 0.7;
-  const isInferred = data.source === 'inferred';
-
-  return (
-    <div className={`px-4 py-3 shadow-md rounded-md ${style.bg} border-2 ${style.border} min-w-[220px] ${isLowConfidence ? 'opacity-70' : ''}`}>
-      <div className="flex justify-between items-center mb-1 gap-2">
-        <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider ${style.badge}`}>
-          {style.label}
-        </span>
-        {isInferred && (
-          <span className="text-[8px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 font-semibold">INFERRED</span>
-        )}
-        {isLowConfidence && (
-          <span className="text-[8px] px-1 py-0.5 rounded bg-gray-100 text-gray-600">{(data.confidence * 100).toFixed(0)}%</span>
-        )}
-        <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-semibold uppercase ${
-          data.status === 'ready' ? 'bg-green-100 text-green-700' : data.status === 'draft' ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-600'
-        }`}>
-          {data.status}
-        </span>
-      </div>
-      <div className="font-semibold text-xs text-gray-800 line-clamp-1">{data.label}</div>
-      {data.constraints && data.constraints.length > 0 && (
-        <div className="flex flex-wrap gap-1 mt-1.5">
-          {data.constraints.slice(0, 3).map((c: string) => (
-            <span key={c} className="text-[8px] bg-red-50 text-red-600 px-1 rounded border border-red-100">{c}</span>
-          ))}
-        </div>
-      )}
-      <div className="flex gap-3 mt-2 text-[10px] text-gray-500 border-t pt-2">
-        <div>📋 <span className="font-semibold text-gray-700">{data.todo_count || 0}</span> Todos</div>
-        <div>📦 <span className="font-semibold text-gray-700">{data.entity_count || 0}</span> Entities</div>
-      </div>
-      <Handle type="source" position={Position.Bottom} className="w-2 h-2 !bg-blue-500" />
-    </div>
-  );
-};
-
-// Todo-level node (service / infra / execution)
-const TodoNode = ({ data }: any) => {
-  const style = layerStyle(data.graph_type);
-
-  return (
-    <div className={`px-3 py-2.5 shadow-sm rounded-md border ${style.border} ${style.bg} min-w-[180px] hover:border-indigo-400 transition-colors`}>
-      <div className="flex justify-between items-center mb-1">
-        <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${style.badge}`}>
-          {style.label}
-        </span>
-        <span className={`text-[8px] px-1 py-0.5 rounded font-medium uppercase ${
-          data.status === 'done' ? 'bg-green-50 text-green-600' :
-          data.status === 'in_progress' ? 'bg-blue-50 text-blue-600' : 'bg-gray-100 text-gray-600'
-        }`}>
-          {data.status}
-        </span>
-      </div>
-      <div className="text-[11px] font-medium text-gray-700 line-clamp-2">{data.label}</div>
-      <div className="flex justify-between items-center mt-2 text-[9px] text-gray-400 border-t pt-1.5">
-        <div>📦 {data.entity_count || 0} Entities</div>
-      </div>
-      <Handle type="target" position={Position.Top} className="w-1.5 h-1.5 !bg-indigo-400" />
-      <Handle type="source" position={Position.Bottom} className="w-1.5 h-1.5 !bg-indigo-400" />
-    </div>
-  );
-};
-
-const nodeTypes = {
-  capability: FeatureNode,
-  service: FeatureNode,
-  risk: FeatureNode,
-  infra: TodoNode,
-  execution: TodoNode,
-  // legacy fallbacks
-  feature: FeatureNode,
-  todo: TodoNode,
-};
-
 const LAYER_FILTERS = ['all', 'capability', 'service', 'risk', 'infra', 'execution'] as const;
 type LayerFilter = typeof LAYER_FILTERS[number];
 
+// Cytoscape stylesheet for different node/edge types
+const cyStylesheet: cytoscape.StylesheetCSS[] = [
+  // Feature nodes (compound parents)
+  {
+    selector: 'node[type = "feature"]',
+    css: {
+      'background-color': '#6366f1',
+      'shape': 'round-rectangle',
+      'width': 'label',
+      'height': 'label',
+      'padding': '12px',
+      'border-width': 2,
+      'border-color': '#4f46e5',
+      'text-valign': 'top',
+      'text-halign': 'center',
+      'color': '#ffffff',
+      'font-size': '11px',
+      'font-weight': 'bold',
+      'text-max-width': '180px',
+      'text-wrap': 'wrap',
+      'label': 'data(label)',
+      'opacity': 0.95,
+    }
+  },
+  // Todo nodes (children of features)
+  {
+    selector: 'node[type = "todo"]',
+    css: {
+      'background-color': '#22c55e',
+      'shape': 'ellipse',
+      'width': 'label',
+      'height': 'label',
+      'padding': '8px',
+      'border-width': 1.5,
+      'border-color': '#16a34a',
+      'text-valign': 'center',
+      'text-halign': 'center',
+      'color': '#1e293b',
+      'font-size': '10px',
+      'font-weight': 'normal',
+      'text-max-width': '140px',
+      'text-wrap': 'wrap',
+      'label': 'data(label)',
+    }
+  },
+  // Node type-specific colors
+  {
+    selector: 'node[graph_type = "capability"]',
+    css: { 'background-color': '#6366f1', 'border-color': '#4f46e5' }
+  },
+  {
+    selector: 'node[graph_type = "service"]',
+    css: { 'background-color': '#22c55e', 'border-color': '#16a34a' }
+  },
+  {
+    selector: 'node[graph_type = "risk"]',
+    css: { 'background-color': '#ef4444', 'border-color': '#dc2626', 'shape': 'diamond' }
+  },
+  {
+    selector: 'node[graph_type = "infra"]',
+    css: { 'background-color': '#f59e0b', 'border-color': '#d97706' }
+  },
+  {
+    selector: 'node[graph_type = "execution"]',
+    css: { 'background-color': '#8b5cf6', 'border-color': '#7c3aed' }
+  },
+  // Dependency edges
+  {
+    selector: 'edge[type = "depends_on"]',
+    css: {
+      'width': 2,
+      'line-color': '#94a3b8',
+      'target-arrow-color': '#94a3b8',
+      'target-arrow-shape': 'triangle',
+      'curve-style': 'bezier',
+      'arrow-scale': 0.8,
+    }
+  },
+  // Compound node parent styling
+  {
+    selector: 'node[parent]',
+    css: {
+      'padding': '5px',
+    }
+  },
+];
+
 export default function GraphView({ projectId }: GraphViewProps) {
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const cyRef = useRef<cytoscape.Core | null>(null);
+  const [elements, setElements] = useState<cytoscape.ElementDefinition[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeLayer, setActiveLayer] = useState<LayerFilter>('all');
 
-  const loadGraphData = useCallback(async () => {
+  const loadGraph = useCallback(async () => {
+    await loadDagre();
     try {
-      const data = await getGraphData(projectId);
-      setNodes(data.nodes || []);
-      setEdges(data.edges || []);
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000'}/api/projects/${projectId}/graph`);
+      if (!res.ok) throw new Error('Failed to fetch graph data');
+      const data = await res.json();
+      setElements(data.elements || []);
       setError(null);
     } catch (err: any) {
-      console.error('Failed to load project graph:', err);
-      setError(err.message || 'Failed to load project graph data');
+      setError(err.message || 'Failed to load graph');
     } finally {
       setLoading(false);
     }
   }, [projectId]);
 
-  useEffect(() => {
-    loadGraphData();
+  useEffect(() => { loadGraph(); }, [loadGraph]);
 
-    const handleUpdate = () => loadGraphData();
-    window.addEventListener('prd-updated', handleUpdate);
-    return () => {
-      window.removeEventListener('prd-updated', handleUpdate);
-    };
-  }, [loadGraphData]);
+  // Handle layer filtering
+  const handleLayerFilter = (layer: LayerFilter) => {
+    setActiveLayer(layer);
+    const cy = cyRef.current;
+    if (!cy) return;
 
-  // Filter nodes/edges by active layer
-  const filteredNodes = activeLayer === 'all'
-    ? nodes
-    : nodes.filter(n => {
-        const gt = n.data?.graph_type || n.type || '';
-        // feature-level types: capability, service, risk
-        // todo-level types: service, infra, execution
-        // Map legacy types
-        if (n.type === 'feature') return activeLayer === 'capability';
-        if (n.type === 'todo') return activeLayer === 'service';
-        return gt === activeLayer;
+    if (layer === 'all') {
+      cy.elements().style('display', 'element');
+    } else {
+      cy.elements().style('display', 'none');
+      // Show nodes matching the graph_type
+      cy.nodes(`[graph_type = "${layer}"]`).style('display', 'element');
+      // Show parent nodes of visible children
+      cy.nodes().filter(n => (n as any).isParent() && (n as any).children().length > 0).style('display', 'element');
+      // Show edges connected to visible nodes
+      cy.edges().forEach((edge: any) => {
+        if (edge.source().style('display') !== 'none' && edge.target().style('display') !== 'none') {
+          edge.style('display', 'element');
+        }
       });
-
-  const filteredEdges = activeLayer === 'all'
-    ? edges
-    : edges.filter(e => {
-        const src = filteredNodes.find(n => n.id === e.source);
-        const tgt = filteredNodes.find(n => n.id === e.target);
-        return src && tgt;
-      });
+    }
+  };
 
   if (loading) {
     return (
@@ -191,7 +183,7 @@ export default function GraphView({ projectId }: GraphViewProps) {
       <div className="absolute top-6 left-6 z-10 bg-white/90 backdrop-blur shadow-sm p-3 rounded-md border border-gray-100">
         <h2 className="text-sm font-semibold text-gray-800">Typed Architecture Graph</h2>
         <p className="text-[10px] text-gray-500 mt-0.5">
-          {filteredNodes.length} nodes · {filteredEdges.length} edges
+          {elements.length} elements
         </p>
       </div>
 
@@ -200,7 +192,7 @@ export default function GraphView({ projectId }: GraphViewProps) {
         {LAYER_FILTERS.map(layer => (
           <button
             key={layer}
-            onClick={() => setActiveLayer(layer)}
+            onClick={() => handleLayerFilter(layer)}
             className={`text-[10px] px-2 py-1 rounded font-semibold transition capitalize ${
               activeLayer === layer
                 ? 'bg-gray-800 text-white shadow-sm'
@@ -212,18 +204,21 @@ export default function GraphView({ projectId }: GraphViewProps) {
         ))}
       </div>
 
-      <ReactFlow
-        nodes={filteredNodes}
-        edges={filteredEdges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        nodeTypes={nodeTypes}
-        fitView
-      >
-        <Controls />
-        <MiniMap zoomable pannable nodeStrokeWidth={3} />
-        <Background gap={12} size={1} />
-      </ReactFlow>
+      <CytoscapeComponent
+        elements={elements}
+        style={{ width: '100%', height: '100%' }}
+        stylesheet={cyStylesheet}
+        layout={{
+          name: 'dagre',
+          rankDir: 'TB',
+          spacingFactor: 1.5,
+          animate: true,
+          nodeSep: 40,
+          rankSep: 60,
+        } as any}
+        cy={(cy) => { cyRef.current = cy; }}
+        wheelSensitivity={0.3}
+      />
     </div>
   );
 }

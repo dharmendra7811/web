@@ -1378,80 +1378,72 @@ server.get('/api/projects/:id/graph', async (request, reply) => {
     featuresWithTodos.push(feature);
   }
 
-  // Convert to React Flow format
-  const nodes = [];
-  const edges = [];
+  // Convert to Cytoscape elements format (compound nodes: features contain todos)
+  const elements = [];
 
-  // Group features by graph_type for layered layout
-  const capabilities = featuresWithTodos.filter(f => f.graph_type === 'capability');
-  const services = featuresWithTodos.filter(f => f.graph_type === 'service');
-  const risks = featuresWithTodos.filter(f => f.graph_type === 'risk');
-  const other = featuresWithTodos.filter(f => !['capability', 'service', 'risk'].includes(f.graph_type));
-
-  const layerOrder = [...capabilities, ...services, ...risks, ...other];
-
-  // Add feature nodes — position by layer (columns by type, rows within type)
-  layerOrder.forEach((feature, index) => {
-    const xOffset = index * 320;
-    nodes.push({
-      id: feature.id,
-      type: feature.graph_type || 'capability',
-      position: { x: xOffset, y: 0 },
+  // Add feature nodes (parents) and todo nodes (children)
+  for (const feature of featuresWithTodos) {
+    // Add feature as a parent node
+    elements.push({
       data: {
+        id: feature.id,
         label: feature.title,
+        type: 'feature',
+        graph_type: feature.graph_type || 'capability',
         status: feature.status,
         human_locked: feature.human_locked,
-        entity_count: feature.entities.length,
-        todo_count: feature.todos.length,
-        graph_type: feature.graph_type || 'capability',
+        entity_count: feature.entities?.length || 0,
+        todo_count: feature.todos?.length || 0,
         constraints: feature.constraints || [],
         confidence: feature.confidence,
         source: feature.source,
       }
     });
 
-    // Add todo nodes under this feature
-    feature.todos.forEach((todo, todoIndex) => {
-      nodes.push({
-        id: todo.id,
-        type: todo.graph_type || 'service',
-        position: { x: xOffset, y: (todoIndex + 1) * 80 + 120 },
+    // Add todo nodes as children of the feature (compound nodes)
+    for (const todo of feature.todos) {
+      elements.push({
         data: {
+          id: todo.id,
           label: todo.title,
+          type: 'todo',
+          graph_type: todo.graph_type || 'service',
           status: todo.status,
           human_locked: todo.human_locked,
-          entity_count: todo.entities.length,
-          graph_type: todo.graph_type || 'service',
+          entity_count: todo.entities?.length || 0,
+          parent: feature.id, // Compound node: todo is inside feature
         }
       });
 
-      // Add parent-child edge from Feature to the FIRST Todo child node only
-      if (todoIndex === 0) {
-        edges.push({
-          id: `${feature.id}-contains-${todo.id}`,
-          source: feature.id,
-          target: todo.id,
-          style: { stroke: '#818cf8', strokeWidth: 1.5, strokeDasharray: '4,4' },
-          animated: false,
-        });
+      // Add depends_on edges (only between todos)
+      if (todo.depends_on && Array.isArray(todo.depends_on)) {
+        for (const depId of todo.depends_on) {
+          // Verify the source node exists in our elements
+          const sourceExists = elements.some(e => e.data.id === depId);
+          if (sourceExists) {
+            elements.push({
+              data: {
+                id: `edge-${todo.id}-dep-${depId}`,
+                source: depId,
+                target: todo.id,
+                type: 'depends_on',
+              }
+            });
+          } else {
+            console.warn(`[Graph] Skipping edge: source node ${depId} not found for todo ${todo.id}`);
+          }
+        }
       }
+    }
+  }  // <-- closes for (const feature of featuresWithTodos)
 
-      // Add depends_on edges
-      todo.depends_on.forEach(depId => {
-        edges.push({
-          id: `${todo.id}-depends-on-${depId}`,
-          source: depId,
-          target: todo.id,
-          type: 'depends_on',
-          animated: true,
-        });
-      });
-    });
-  });
+  // Summary log
+  const nodeCount = elements.filter(e => !e.data.source).length;
+  const edgeCount = elements.filter(e => e.data.source).length;
+  const dependsOnEdges = elements.filter(e => e.data.type === 'depends_on').length;
+  console.log(`[Graph] Returning ${nodeCount} nodes and ${edgeCount} edges (${dependsOnEdges} depends_on edges)`);
 
-  // TODO: Add same_entity edges (capped at 20)
-
-  return { nodes, edges };
+  return { elements };
 });
 
 // Start the server

@@ -4,6 +4,9 @@ export interface Project {
   name: string;
   prd_text?: string;
   summary?: string;
+  review_state?: string;
+  review_questions?: any;
+  features?: Feature[];  // Nested features with todos
   created_at: string;
   updated_at: string;
 }
@@ -35,6 +38,6 @@ export interface Todo {
   human_locked: boolean;
   ticket_id?: string;
   ticket_adapter?: 'linear' | 'jira' | 'github';
-  created_at: string;
-  updated_at: string;
+  created_at?: string;
+  updated_at?: string;
 }
