@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 interface UploadZoneProps {
   projectId: string;
@@ -8,6 +8,7 @@ interface UploadZoneProps {
   onPRDSubmit: () => void;
   editing: boolean;
   theme?: 'light' | 'dark';
+  initialText?: string;
 }
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
@@ -17,11 +18,17 @@ export default function UploadZone({
   onPRDChange, 
   onPRDSubmit,
   editing,
-  theme = 'dark'
+  theme = 'dark',
+  initialText = ''
 }: UploadZoneProps) {
   const [file, setFile] = useState<File | null>(null);
-  const [prdText, setPrdText] = useState('');
+  const [prdText, setPrdText] = useState(initialText);
   const [parsing, setParsing] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    setPrdText(initialText);
+  }, [initialText, editing]);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -33,12 +40,10 @@ export default function UploadZone({
       const ext = selectedFile.name.split('.').pop()?.toLowerCase();
 
       if (ext === 'txt' || ext === 'md') {
-        // Client-side FileReader for plaintext files
         const text = await readFileAsText(selectedFile);
         setPrdText(text);
         onPRDChange(text);
       } else if (ext === 'pdf' || ext === 'docx') {
-        // Send to backend for parsing
         const formData = new FormData();
         formData.append('file', selectedFile);
         const res = await fetch(`${API_URL}/api/parse`, {
@@ -78,17 +83,19 @@ export default function UploadZone({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    onPRDSubmit();
+    setSubmitting(true);
+    await onPRDSubmit();
+    setSubmitting(false);
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      {/* File Upload Zone */}
-      <div className="space-y-1.5">
-        <label className={`block text-xs font-extrabold uppercase tracking-wider ${
-          theme === 'dark' ? 'text-slate-400' : 'text-slate-650'
+    <form onSubmit={handleSubmit} className="flex flex-col h-full gap-4 font-mono">
+      {/* File Upload Zone - Only show if not editing existing PRD or explicitly requested */}
+      <div className="flex flex-col gap-2">
+        <label className={`text-[10px] font-bold uppercase tracking-wider ${
+          theme === 'dark' ? 'text-[#8b949e]' : 'text-[#57606a]'
         }`}>
-          Upload PRD File (.pdf, .docx, .md, .txt)
+          // UPLOAD DOCUMENT (.MD, .TXT, .PDF, .DOCX)
         </label>
         <div className="relative group">
           <input
@@ -96,92 +103,58 @@ export default function UploadZone({
             accept=".pdf,.docx,.md,.txt"
             onChange={handleFileChange}
             className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-            disabled={editing || parsing}
+            disabled={parsing || submitting}
           />
-          <div className={`border border-dashed rounded-xl p-4 text-center transition-all ${
-            editing || parsing ? 'opacity-50 cursor-not-allowed' : ''
+          <div className={`border border-dashed p-3 text-center transition-colors ${
+            parsing || submitting ? 'opacity-50 cursor-not-allowed' : ''
           } ${
             theme === 'dark' 
-              ? 'border-slate-800 bg-slate-950/20 group-hover:bg-slate-950/50 group-hover:border-slate-700/80' 
-              : 'border-slate-300 bg-slate-50 group-hover:bg-slate-100/80 group-hover:border-slate-400'
+              ? 'border-[#30363d] bg-[#161b22] group-hover:bg-[#21262d] group-hover:border-[#8b949e]' 
+              : 'border-[#d0d7de] bg-[#f6f8fa] group-hover:bg-[#e5e7eb] group-hover:border-[#57606a]'
           }`}>
             {parsing ? (
-              <div className="flex items-center justify-center gap-2">
-                <span className="animate-spin rounded-full h-4 w-4 border-2 border-indigo-500 border-t-transparent"></span>
-                <span className={`text-xs ${
-                  theme === 'dark' ? 'text-slate-300' : 'text-slate-600'
-                }`}>Parsing {file?.name}...</span>
-              </div>
+              <span className={`text-xs ${theme === 'dark' ? 'text-[#8b949e]' : 'text-[#57606a]'}`}>Parsing {file?.name}...</span>
             ) : (
-              <>
-                <svg className={`w-8 h-8 mx-auto mb-2 opacity-80 group-hover:scale-110 transition-transform duration-200 ${
-                  theme === 'dark' ? 'text-indigo-400' : 'text-indigo-650'
-                }`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                </svg>
-                <span className={`text-xs font-bold block ${
-                  theme === 'dark' ? 'text-slate-350' : 'text-slate-700'
-                }`}>
-                  {file ? `Selected: ${file.name}` : "Drag and drop or click to choose file"}
-                </span>
-                <span className={`text-[10px] mt-1 block ${
-                  theme === 'dark' ? 'text-slate-500' : 'text-slate-450'
-                }`}>
-                  Supported up to 20MB
-                </span>
-              </>
+              <span className={`text-xs font-bold ${theme === 'dark' ? 'text-[#c9d1d9]' : 'text-[#24292f]'}`}>
+                {file ? `[ ${file.name} ]` : "[ DROP FILE OR CLICK ]"}
+              </span>
             )}
           </div>
         </div>
       </div>
       
-      {/* Text Area Paste */}
-      {!editing && (
-        <div className="space-y-1.5">
-          <label className={`block text-xs font-extrabold uppercase tracking-wider ${
-            theme === 'dark' ? 'text-slate-400' : 'text-slate-650'
-          }`}>
-            Or Paste Raw PRD Content
-          </label>
-          <textarea
-            value={prdText}
-            onChange={handleTextChange}
-            rows={4}
-            placeholder="Type or paste the complete PRD technical contents here..."
-            className={`rounded-xl p-3 w-full text-xs placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all resize-none border ${
-              theme === 'dark' 
-                ? 'bg-slate-950 border-slate-850/60 text-slate-200 placeholder-slate-600 focus:ring-indigo-500/80' 
-                : 'bg-white border-slate-250 text-slate-800 focus:ring-indigo-500/60 shadow-sm'
-            }`}
-            disabled={editing}
-          />
-        </div>
-      )}
+      {/* Text Editor Area */}
+      <div className="flex flex-col gap-2 flex-1 min-h-[300px]">
+        <label className={`text-[10px] font-bold uppercase tracking-wider ${
+          theme === 'dark' ? 'text-[#8b949e]' : 'text-[#57606a]'
+        }`}>
+          // RAW TEXT EDITOR
+        </label>
+        <textarea
+          value={prdText}
+          onChange={handleTextChange}
+          placeholder="Paste PRD content here..."
+          className={`flex-1 p-3 text-xs outline-none resize-none border ${
+            theme === 'dark' 
+              ? 'bg-[#0d1117] border-[#30363d] text-[#c9d1d9] focus:border-[#58a6ff]' 
+              : 'bg-[#ffffff] border-[#d0d7de] text-[#24292f] focus:border-[#0969da]'
+          }`}
+          disabled={parsing || submitting}
+        />
+      </div>
       
       {/* Action Button */}
-      <div className="flex justify-end pt-1">
+      <div className="flex justify-end mt-2">
         <button
           type="submit"
-          disabled={editing || parsing || !prdText.trim()}
-          className={`flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-bold text-xs py-2.5 px-5 rounded-xl shadow-lg transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer ${
+          disabled={parsing || submitting || !prdText.trim()}
+          className={`px-4 py-2 text-xs font-bold uppercase border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
             theme === 'dark'
-              ? 'shadow-indigo-600/10 hover:shadow-indigo-500/20 active:shadow-indigo-750/30 transform hover:-translate-y-0.5 active:translate-y-0'
-              : 'shadow-indigo-600/20'
+              ? 'bg-[#238636] hover:bg-[#2ea043] text-white border-transparent'
+              : 'bg-[#2da44e] hover:bg-[#2c974b] text-white border-transparent'
           }`}
         >
-          {editing ? (
-            <>
-              <span className="animate-spin rounded-full h-3 w-3 border-t border-b border-white"></span>
-              <span>Saving Document...</span>
-            </>
-          ) : (
-            <>
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-              </svg>
-              <span>Submit PRD</span>
-            </>
-          )}
+          {submitting ? 'PROCESSING...' : (editing ? 'SAVE CHANGES' : 'PROCESS PRD')}
         </button>
       </div>
     </form>
