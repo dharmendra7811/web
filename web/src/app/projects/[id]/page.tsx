@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useState, use } from 'react';
 import UploadZone from '@/app/components/prd/UploadZone';
 import ReviewPanel from '@/app/components/prd/ReviewPanel';
+import ArchitecturePanel from '@/app/components/prd/ArchitecturePanel';
 import IngestionProgress from '@/app/components/prd/IngestionProgress';
 import FolderTree from '@/app/components/features/FolderTree';
 import ChatPanel from '@/app/components/chat/ChatPanel';
@@ -18,6 +19,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [view, setView] = useState<'list' | 'graph'>('list');
   const [editing, setEditing] = useState(false);
   const [prdText, setPrdText] = useState('');
+  const [sidebarTab, setSidebarTab] = useState<'prd' | 'arch'>('prd');
 
   // Theme state: default to dark, save/load from localStorage
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
@@ -63,12 +65,14 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
   const handlePRDChange = (text: string) => setPrdText(text);
 
-  const handlePRDSubmit = async () => {
+  const handlePRDSubmit = async (confirmedSections?: any[]) => {
     setLoading(true);
     try {
       await updateProjectPRD(id, prdText);
       await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000'}/api/projects/${id}/review`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmedSections }),
       });
       await loadProject();
       setEditing(false);
@@ -237,21 +241,52 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         {view === 'list' ? (
           <>
             {/* Left Sidebar: PRD Admin */}
-            <div className={`w-[25%] min-w-[300px] max-w-[450px] border-r flex flex-col overflow-y-auto ${theme === 'dark' ? 'border-[#30363d] bg-[#0d1117]' : 'border-[#d0d7de] bg-[#f6f8fa]'}`}>
-              <div className={`px-4 py-2 border-b text-xs font-mono font-bold uppercase tracking-wider sticky top-0 z-10 ${theme === 'dark' ? 'border-[#30363d] bg-[#161b22] text-[#8b949e]' : 'border-[#d0d7de] bg-[#e5e7eb] text-[#57606a]'}`}>
-                PRD Configuration
+            <div className={`w-[25%] min-w-[300px] max-w-[450px] border-r flex flex-col overflow-hidden ${theme === 'dark' ? 'border-[#30363d] bg-[#0d1117]' : 'border-[#d0d7de] bg-[#f6f8fa]'}`}>
+              {/* Sidebar Tab Headers */}
+              <div className={`flex border-b text-[9px] uppercase font-bold tracking-wider sticky top-0 z-10 ${theme === 'dark' ? 'border-[#30363d] bg-[#161b22]' : 'border-[#d0d7de] bg-[#e5e7eb]'}`}>
+                <button
+                  onClick={() => setSidebarTab('prd')}
+                  className={`flex-1 py-2 text-center border-r transition-colors ${
+                    sidebarTab === 'prd'
+                      ? (theme === 'dark' ? 'bg-[#0d1117] text-white border-b-2 border-b-[#58a6ff] border-r-[#30363d]' : 'bg-[#ffffff] text-black border-b-2 border-b-[#0969da] border-r-[#d0d7de]')
+                      : (theme === 'dark' ? 'text-[#8b949e] border-r-[#30363d] hover:bg-[#21262d]' : 'text-[#57606a] border-r-[#d0d7de] hover:bg-[#f6f8fa]')
+                  }`}
+                >
+                  PRD Config
+                </button>
+                <button
+                  onClick={() => setSidebarTab('arch')}
+                  className={`flex-1 py-2 text-center transition-colors relative ${
+                    sidebarTab === 'arch'
+                      ? (theme === 'dark' ? 'bg-[#0d1117] text-white border-b-2 border-b-[#58a6ff]' : 'bg-[#ffffff] text-black border-b-2 border-b-[#0969da]')
+                      : (theme === 'dark' ? 'text-[#8b949e] hover:bg-[#21262d]' : 'text-[#57606a] hover:bg-[#f6f8fa]')
+                  }`}
+                >
+                  Architecture
+                  {(project?.data_model_draft?.length > 0) && (
+                    <span className="ml-1 text-[7px] text-[#3fb950]">●</span>
+                  )}
+                </button>
               </div>
-              <div className="p-4 space-y-6">
-                {project?.review_state === 'reviewing' && project.review_questions ? (
-                  <ReviewPanel projectId={id} questions={project.review_questions} onClarify={loadProject} theme={theme} />
-                ) : (
-                  <UploadZone projectId={id} onPRDChange={handlePRDChange} onPRDSubmit={handlePRDSubmit} editing={editing} theme={theme} initialText={project?.prd_text || ""} />
-                )}
 
-                {!editing && project.review_state !== 'reviewing' && (
-                  <div className={`mt-6 border-t pt-4 ${theme === 'dark' ? 'border-[#30363d]' : 'border-[#d0d7de]'}`}>
-                    <IngestionProgress projectId={id} theme={theme} />
+              {/* Sidebar Tab Content */}
+              <div className="flex-1 overflow-y-auto">
+                {sidebarTab === 'prd' ? (
+                  <div className="p-4 space-y-6">
+                    {project?.review_state === 'reviewing' && project.review_questions ? (
+                      <ReviewPanel projectId={id} project={project} onClarify={loadProject} theme={theme} />
+                    ) : (
+                      <UploadZone projectId={id} onPRDChange={handlePRDChange} onPRDSubmit={handlePRDSubmit} editing={editing} theme={theme} initialText={project?.prd_text || ""} />
+                    )}
+
+                    {!editing && project.review_state !== 'reviewing' && (
+                      <div className={`mt-6 border-t pt-4 ${theme === 'dark' ? 'border-[#30363d]' : 'border-[#d0d7de]'}`}>
+                        <IngestionProgress projectId={id} theme={theme} />
+                      </div>
+                    )}
                   </div>
+                ) : (
+                  <ArchitecturePanel project={project} theme={theme} />
                 )}
               </div>
             </div>

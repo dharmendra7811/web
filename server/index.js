@@ -89,7 +89,7 @@ async function redmineRequest(endpoint, method = 'GET', data = null) {
   }
 
   const response = await fetch(url, options);
-  
+
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Redmine API error: ${response.status} ${errorText}`);
@@ -106,7 +106,7 @@ async function syncToRedmine(issue) {
   }
 
   const payload = { issue };
-  
+
   // Check if issue already exists (by checking ticket_id)
   if (issue.id) {
     // Update existing issue
@@ -203,29 +203,39 @@ const featureExtractionWorker = new Worker('feature-extraction', async (job) => 
 
   await query('UPDATE projects SET summary = $1 WHERE id = $2', [summaryText.trim(), projectId]);
 
-  // Extract features
-  console.log(`[FeatureExtractionWorker] Extracting features for project ${projectId}`);
-  const featurePrompt = `You are a product analyst extracting a formal Semantic IR from a PRD.
+  const archContext = `
+### Finalized Architecture Foundation
+Data Model (Tables & Columns):
+${JSON.stringify(project.data_model_draft || [], null, 2)}
+
+API Surface (Endpoints):
+${JSON.stringify(project.api_surface_draft || [], null, 2)}
+`;
+
+  // Extract features chunk-by-chunk to ensure high fidelity
+  console.log(`[FeatureExtractionWorker] Extracting features for project ${projectId} (Chunked)...`);
+  
+  const sections = detectSections(project.prd_text);
+  const headingsList = sections.map(s => s.heading);
+  
+  const chunkPromises = sections.map(async (section) => {
+    const featurePrompt = `You are a product architect extracting a formal Semantic IR from a specific section of a PRD, guided by the system's Finalized Architecture Foundation.
+Your goal is to identify core system Features from THIS section that align with the approved database schema and API endpoints.
+
+Current Section: ${section.heading}
+Section Text:
+${section.text}
 
 Each feature must include:
 - title: short system capability name (e.g. AUTH_LOGIN, PAYMENT_CHECKOUT)
 - description: what the system must do — 1-2 sentences
 - actors: who uses this
-- entities: lowercase, singular domain nouns only — NOT UI component names or endpoint names
-- constraints: hidden requirements inferred from PRD text (e.g. "rate_limited", "otp_required", "pci_compliant", "audit_logged"). Empty array if none found.
-- external_deps: external systems/services this depends on (e.g. "stripe", "sendgrid", "google_maps"). Empty array if none.
-- confidence: number 0-1 — how certain you are this feature is genuinely required by the PRD (0.9+ for explicit mentions, 0.5-0.8 for strong inference, below 0.5 for guesswork)
-- source: "explicit" if the feature is directly stated in the PRD text. "inferred" if you deduced it from context.
-- graph_type: classify the feature into one of:
-    "capability" — user-facing business capability (e.g. AUTH_LOGIN, PAYMENT_CHECKOUT, SEARCH_RESTAURANTS)
-    "service" — backend/internal service module (e.g. NOTIFICATION_DISPATCHER, PAYMENT_GATEWAY_ADAPTER)
-    "risk" — compliance, security, or operational risk concern (e.g. PCI_COMPLIANCE, RATE_LIMITER, AUDIT_LOGGER)
-  If a feature fits multiple, pick the most specific. Prefer "risk" only when the feature IS primarily a risk concern, not just a feature that happens to have constraints.
-
-Deduplication rules (IMPORTANT):
-- If two capabilities are variations of the same domain verb or business action (e.g. AUTH_LOGIN and AUTH_REGISTER both deal with authentication entry), merge them into ONE feature with a broader title (e.g. AUTH_ENTRY).
-- Do NOT produce sibling features that differ only by minor workflow variation. Consolidate aggressively.
-- Each feature title must be unique.
+- entities: lowercase, singular domain nouns matching the Data Model tables where possible.
+- constraints: hidden requirements inferred from text (e.g. "rate_limited", "otp_required"). Empty array if none.
+- external_deps: external systems/services this depends on. Empty array if none.
+- confidence: number 0-1 (0.9+ for explicit mentions)
+- source: "explicit" if directly stated. "inferred" if deduced.
+- graph_type: "capability" (user-facing), "service" (backend/internal), or "risk" (compliance/security).
 
 Return ONLY valid JSON. No preamble, no explanation, no markdown.
 
@@ -245,13 +255,33 @@ Return ONLY valid JSON. No preamble, no explanation, no markdown.
   ]
 }
 
-PRD:
-${project.prd_text}`;
+${archContext}`;
 
-  const featureRaw = await callModel('openai/gpt-oss-120b', featurePrompt);
-  const { features } = parseJSON(featureRaw);
+    try {
+      const raw = await callModel('openai/gpt-oss-120b', featurePrompt);
+      const parsed = parseJSON(raw);
+      return parsed.features || [];
+    } catch (err) {
+      console.error(`[FeatureExtraction] Error extracting from section ${section.heading}:`, err);
+      return [];
+    }
+  });
 
-  console.log(`[FeatureExtractionWorker] Extracted ${features.length} features`);
+  const chunkResults = await Promise.all(chunkPromises);
+  const allFeatures = chunkResults.flat();
+
+  // Basic deduplication: keep highest confidence if title matches
+  const featureMap = new Map();
+  for (const f of allFeatures) {
+    if (!f.title) continue;
+    const key = f.title.toUpperCase();
+    if (!featureMap.has(key) || featureMap.get(key).confidence < f.confidence) {
+      featureMap.set(key, f);
+    }
+  }
+  const features = Array.from(featureMap.values());
+
+  console.log(`[FeatureExtractionWorker] Extracted ${features.length} unique features from ${sections.length} sections`);
 
   // Insert features and queue todo generation
   for (let i = 0; i < features.length; i++) {
@@ -298,7 +328,20 @@ const todoGenerationWorker = new Worker('todo-generation', async (job) => {
   const { projectId, featureId, projectSummary, featureTitle, featureDescription, featureActors } = job.data;
   console.log(`[TodoGenerationWorker] Generating todos for feature "${featureTitle}" (${featureId})`);
 
-  const todoPrompt = `You are a senior engineer preparing developer assignment specs from a feature breakdown.
+  // Fetch project to get the finalized architecture
+  const projectRes = await query('SELECT data_model_draft, api_surface_draft FROM projects WHERE id = $1', [projectId]);
+  const project = projectRes.rows[0] || {};
+  
+  const archContext = `
+### Finalized Architecture Foundation
+Data Model (Tables & Columns):
+${JSON.stringify(project.data_model_draft || [], null, 2)}
+
+API Surface (Endpoints):
+${JSON.stringify(project.api_surface_draft || [], null, 2)}
+`;
+
+  const todoPrompt = `You are a senior engineer preparing developer assignment specs from a feature breakdown and the system's Finalized Architecture Foundation.
 
 Project context: ${projectSummary}
 
@@ -306,34 +349,37 @@ Feature: ${featureTitle}
 Description: ${featureDescription}
 Actors: ${featureActors ? featureActors.join(', ') : ''}
 
-Generate COMPLETE developer assignments. Each todo is a self-contained unit of work a developer can own end-to-end — a service, module, schema, endpoint, or integration. Write acceptance criteria in the detail field so the developer knows exactly what "done" means.
+Generate highly specific, atomic developer assignments (Todos) that map perfectly to Pull Requests. 
+Do not write vague tasks like "Build backend". Write concrete tasks mapping to the provided database tables and API endpoints.
 
 Rules:
-- Each todo must be substantial — at least a day of work, not a 5-minute fix
-- Use CAPITALIZED_UNDERSCORE names (OTP_PROVIDER, PAYMENT_GATEWAY_ADAPTER, USER_SEARCH_SERVICE)
-- Do NOT generate: "add validation hook", "write unit test", "fix lint error", "run npm install"
-- Cover all layers: data model, backend service, frontend component, infra config
-- Include dependencies so a developer knows what to build first
-- IMPORTANT: The "depends_on_titles" array must ONLY reference titles of other todos defined in THIS response. Do not reference todos from other features or any title not present in this output. If there are no intra-feature dependencies, use an empty array [].
+- Each todo must represent a concrete PR — a service module, a database migration, an API endpoint, or a frontend view.
+- Use CAPITALIZED_UNDERSCORE names (e.g., MIGRATE_USERS_TABLE, API_POST_AUTH_LOGIN, UI_LOGIN_PAGE).
+- Detail MUST contain EXACT implementation instructions (e.g., "Create POST /api/v1/auth/login validating against users.password_hash. Return JWT.")
+- **CRITICAL: Reference specific tables, columns, and API endpoints from the Architecture Foundation in your task details.**
+- Cover all layers: data model, backend service, frontend component, infra config.
+- The "depends_on_titles" array must ONLY reference titles of other todos defined in THIS response.
 
 Classify each assignment into a graph layer:
-  "service" — backend service, primary API endpoint, or database schema
-  "infra" — middleware, auth, external adapter, deployment config
-  "execution" — frontend component, data migration, integration work
+  "service" — backend service, primary API endpoint, or database schema/migration
+  "infra" — middleware, auth, external adapter, deployment config, cron jobs
+  "execution" — frontend component, UI integration, client-side state
 
 Return ONLY valid JSON. No preamble, no explanation, no markdown.
 
 {
   "todos": [
     {
-      "title": "USER_AUTH_SERVICE",
-      "detail": "Build the authentication microservice. Handle signup/login via email OTP and Google OAuth. Store user sessions in Redis. Expose POST /auth/signup, POST /auth/login, POST /auth/verify-otp. Rate-limit OTP requests to 3 per minute per IP. Return JWT on success.",
-      "entities": ["user", "session", "otp"],
-      "depends_on_titles": ["USER_SCHEMA"],
+      "title": "API_POST_AUTH_LOGIN",
+      "detail": "Implement POST /api/v1/auth/login. Validate credentials against 'users' table (email, password_hash via argon2id). On success, generate JWT and return session token. Returns 401 on invalid credentials.",
+      "entities": ["user", "session"],
+      "depends_on_titles": ["MIGRATE_USERS_TABLE"],
       "graph_type": "service"
     }
   ]
-}`;
+}
+
+${archContext}`;
 
   const todoRaw = await callModel('openai/gpt-oss-120b', todoPrompt);
   const { todos } = parseJSON(todoRaw);
@@ -532,9 +578,100 @@ server.post('/api/parse', async (request, reply) => {
   return { text, filename };
 });
 
-// AI PRD Review — analyzes PRD and returns clarifying questions
+// Helper to detect sections in PRD
+function detectSections(prdText) {
+  if (!prdText) return [];
+
+  // Find markdown headers: lines starting with #, ##, or ###
+  const lines = prdText.split('\n');
+  const sections = [];
+  let currentSection = null;
+
+  for (const line of lines) {
+    const match = line.match(/^(#{1,3})\s+(.+)$/);
+    if (match) {
+      if (currentSection) {
+        sections.push(currentSection);
+      }
+      currentSection = {
+        heading: match[2].trim(),
+        text: '',
+        level: match[1].length
+      };
+    } else if (currentSection) {
+      currentSection.text += line + '\n';
+    }
+  }
+
+  if (currentSection) {
+    sections.push(currentSection);
+  }
+
+  // If no sections detected, or only 1 section, fall back to token/paragraph chunking
+  if (sections.length < 2) {
+    const paragraphs = prdText.split(/\n\s*\n/);
+    let chunkIndex = 1;
+    let currentChunkText = '';
+    const fallbackSections = [];
+
+    for (const para of paragraphs) {
+      if (currentChunkText.length + para.length > 3000) {
+        fallbackSections.push({
+          heading: `Section ${chunkIndex++}`,
+          text: currentChunkText.trim()
+        });
+        currentChunkText = '';
+      }
+      currentChunkText += para + '\n\n';
+    }
+
+    if (currentChunkText.trim()) {
+      fallbackSections.push({
+        heading: `Section ${chunkIndex++}`,
+        text: currentChunkText.trim()
+      });
+    }
+
+    return fallbackSections.map(s => ({
+      heading: s.heading,
+      text: s.text,
+      preview: s.text.substring(0, 200) + (s.text.length > 200 ? '...' : '')
+    }));
+  }
+
+  return sections.map(s => ({
+    heading: s.heading,
+    text: s.text.trim(),
+    preview: s.text.trim().substring(0, 200) + (s.text.trim().length > 200 ? '...' : '')
+  }));
+}
+
+// Detect sections endpoint (human-in-the-loop preparation)
+server.post('/api/projects/:id/detect-sections', async (request, reply) => {
+  const { id } = request.params;
+  const { prdText } = request.body || {};
+
+  let textToAnalyze = prdText;
+
+  if (!textToAnalyze) {
+    const projectRes = await query('SELECT prd_text FROM projects WHERE id = $1', [id]);
+    if (projectRes.rows.length > 0) {
+      textToAnalyze = projectRes.rows[0].prd_text;
+    }
+  }
+
+  if (!textToAnalyze || !textToAnalyze.trim()) {
+    return reply.code(400).send({ error: 'No PRD text to analyze' });
+  }
+
+  const sections = detectSections(textToAnalyze);
+  return { sections };
+});
+
+// AI PRD Review — analyzes PRD and returns clarifying questions & full architecture draft
 server.post('/api/projects/:id/review', async (request, reply) => {
   const { id } = request.params;
+  const { confirmedSections } = request.body || {}; // array of { heading, text } confirmed by user
 
   const projectRes = await query('SELECT * FROM projects WHERE id = $1', [id]);
   if (projectRes.rows.length === 0) {
@@ -546,60 +683,232 @@ server.post('/api/projects/:id/review', async (request, reply) => {
     return reply.code(400).send({ error: 'No PRD text to review' });
   }
 
-  const reviewPrompt = `You are a Senior Solutions Architect reviewing a PRD for technical completeness before engineering begins.
-
-Step 1: Map all distinct business modules in this PRD (e.g., Auth, Checkout, Catalog, Notifications). Keep this list internal — do not output it.
-Step 2: For each module, identify ONLY questions where the answer materially changes a database schema, core business logic, or a third-party integration decision. Ignore surface-level ambiguity.
-
-Severity levels:
-- "critical": The answer directly changes table structure, a foreign key constraint, or a branching business rule. Engineering cannot proceed without this. (e.g., "Can one user hold multiple active subscriptions simultaneously?", "Are refunds processed immediately or queued for end-of-day batch?")
-- "moderate": An important edge case or state-transition gap that will cause bugs if assumed incorrectly. (e.g., "What happens to in-progress orders when a vendor account is deactivated?")
-- "minor": A configuration detail or threshold that can be defaulted but should be confirmed. (e.g., "What is the maximum number of items allowed per cart?")
-
-Rules:
-- Do NOT ask questions just to fill space. If a module is clearly specified, ask ZERO questions about it.
-- If the entire PRD is unambiguous, return "questions": [].
-
-- Distribute questions across modules — no more than 3 questions for any single module.
-- Order the output array by severity: all "critical" questions first, then "moderate", then "minor".
-- Every question MUST have an "options" array of 3-4 concrete, mutually exclusive answer choices — not vague placeholders.
-- Every question MUST have a "recommended_default" string — the option you would implement if forced to decide today, based on standard industry practice. This must exactly match one entry in the "options" array.
-- The "context" field must explain the TECHNICAL CONSEQUENCE of leaving this unspecified (e.g., "Without this, we cannot design the refund ledger table or determine whether a compensating transaction entry is required."). Do not just restate what the PRD says.
-- The "summary" field must be a single sentence technical verdict (e.g., "The PRD is mostly complete but has 2 critical schema gaps in the Checkout and Subscription modules that must be resolved before data modelling.").
-
-Return ONLY valid JSON. No preamble, no explanation, no markdown.
-
-{
-  "summary": "One-sentence technical verdict on PRD completeness and where the gaps are.",
-  "questions": [
-    {
-      "module": "Checkout",
-      "severity": "critical",
-      "question": "If a multi-day event is partially cancelled, how are refunds calculated?",
-      "context": "Without this, we cannot design the refund ledger schema or determine whether a line-item credit table is required alongside the orders table.",
-      "options": [
-        "Full refund issued automatically to original payment method",
-        "Prorated refund calculated per remaining day",
-        "Store credit issued to wallet balance",
-        "Manual support ticket required — no automated refund"
-      ],
-      "recommended_default": "Prorated refund calculated per remaining day"
-    }
-  ]
-}
-
-PRD:
-${project.prd_text}`;
+  // Phase 0/1: Use confirmed sections or auto-detect them
+  const sections = confirmedSections || detectSections(project.prd_text);
+  const headingsList = sections.map(s => s.heading);
 
   try {
-    const raw = await callModel('openai/gpt-oss-120b', reviewPrompt);
-    const review = parseJSON(raw);
+    // Phase 2: Parallel Chunk Review
+    console.log(`[Review Pipeline] Starting Phase 2: Reviewing ${sections.length} sections in parallel...`);
+    const chunkPromises = sections.map(async (section) => {
+      const chunkPrompt = `You are a Senior Solutions Architect reviewing a specific section of a PRD for technical completeness before engineering begins.
+      
+Current Section Heading: ${section.heading}
+Current Section Text:
+${section.text}
 
-    // If the AI returned an empty array, auto-skip review and jump straight to ingestion!
-    if (!review.questions || review.questions.length === 0) {
+All Business Modules in this PRD: ${headingsList.join(', ')}
+
+Identify ONLY questions where the answer materially changes a database schema, core business logic, or a third-party integration decision within this section's context.
+
+Severity levels:
+- "critical": Changes table structure, foreign key constraints, or branching business rules.
+- "moderate": Important edge cases or state transition gaps that cause bugs if assumed incorrectly.
+- "minor": Configuration details or thresholds that can be defaulted but should be confirmed.
+
+Rules:
+- Do NOT ask questions just to fill space. If the section is clearly specified, return an empty questions array.
+- Every question MUST have an "options" array of 3-4 concrete, mutually exclusive answer choices.
+- Every question MUST have a "recommended_default" string exactly matching one option.
+- The "context" field must explain the TECHNICAL CONSEQUENCE of leaving this unspecified.
+- The "category" field should be one of: "edge_case", "undefined_behavior", "vague_requirements", "missing_constraints", "unclear_scope", "actor_definitions".
+
+Return ONLY valid JSON (no markdown fences, no preamble):
+{
+  "questions": [
+    {
+      "module": "${section.heading}",
+      "severity": "critical",
+      "category": "edge_case",
+      "question": "...",
+      "context": "...",
+      "options": ["...", "..."],
+      "recommended_default": "..."
+    }
+  ]
+}`;
+      try {
+        const rawResponse = await callModel('openai/gpt-oss-120b', chunkPrompt);
+        const parsed = parseJSON(rawResponse);
+        return parsed.questions || [];
+      } catch (err) {
+        console.error(`[Review Pipeline] Error reviewing section "${section.heading}":`, err);
+        return [];
+      }
+    });
+
+    // Phase 3: Architecture Draft
+    console.log(`[Review Pipeline] Starting Phase 3: Architecture drafting...`);
+    const archPrompt = `You are a Principal Software Architect. Review this complete PRD and generate the fundamental database schema, API endpoints, and third-party integrations required to build this system.
+
+PRD:
+${project.prd_text}
+
+Modules Analyzed:
+${headingsList.join(', ')}
+
+Generate:
+1. "data_model": A simplified relational schema draft. For each table, list core columns, basic relationships, and a confidence level (0.0 to 1.0).
+2. "api_surface": High-level API endpoints with HTTP method, path, module name, and whether auth is required.
+3. "integrations": Third-party services implied or stated (e.g. stripe, sendgrid, auth0) with usage notes and a confidence level.
+4. "risks": A list of architectural risks (concurrency, security, data consistency).
+5. "assumptions": Key technical assumptions made to resolve gaps (e.g. using soft-deletes, multi-tenancy model).
+
+Return ONLY valid JSON (no markdown fences, no preamble):
+{
+  "data_model": [
+    {
+      "table": "orders",
+      "columns": ["id", "user_id", "status", "total_cents"],
+      "relationships": ["belongs_to: users"],
+      "confidence": 0.95
+    }
+  ],
+  "api_surface": [
+    {
+      "method": "POST",
+      "endpoint": "/api/orders",
+      "module": "Checkout",
+      "auth_required": true
+    }
+  ],
+  "integrations": [
+    {
+      "service": "stripe",
+      "usage": "credit card payment processing",
+      "confidence": 0.95
+    }
+  ],
+  "risks": [
+    {
+      "area": "concurrency",
+      "description": "Risk of double booking seats if two checkouts hit simultaneously."
+    }
+  ],
+  "assumptions": [
+    {
+      "assertion": "Using UUIDs for all primary keys",
+      "reasoning": "Standard practice for scalable SaaS databases."
+    }
+  ]
+}`;
+
+    const archPromise = callModel('openai/gpt-oss-120b', archPrompt);
+
+    // Wait for chunk reviews and arch draft in parallel
+    const [allRawQuestionsNested, archRaw] = await Promise.all([
+      Promise.all(chunkPromises),
+      archPromise
+    ]);
+
+    const rawQuestions = allRawQuestionsNested.flat();
+    console.log(`[Review Pipeline] Phase 2 complete. Collected ${rawQuestions.length} raw questions.`);
+
+    const archDraft = parseJSON(archRaw);
+    console.log(`[Review Pipeline] Phase 3 complete. Architecture draft generated.`);
+
+    // Phase 4: Batched Critic Pass
+    // Split questions into batches of 25 so each critic call has a manageable context window.
+    // Each batch: full PRD (~15k tokens) + 25 questions (~1.25k tokens) ≈ well within reliable attention.
+    let validatedQuestions = rawQuestions;
+    if (rawQuestions.length > 0) {
+      const CRITIC_BATCH_SIZE = 25;
+      const batches = [];
+      for (let i = 0; i < rawQuestions.length; i += CRITIC_BATCH_SIZE) {
+        batches.push(rawQuestions.slice(i, i + CRITIC_BATCH_SIZE).map((q, localIdx) => ({
+          ...q,
+          _globalIdx: i + localIdx  // track original index for filtering
+        })));
+      }
+
+      console.log(`[Review Pipeline] Starting Phase 4: Batched Critic Pass (${rawQuestions.length} questions → ${batches.length} batches of ${CRITIC_BATCH_SIZE})...`);
+
+      const batchResults = await Promise.all(batches.map(async (batch, batchIdx) => {
+        const criticPrompt = `You are a Technical Editor checking a PRD review. You have a small batch of potential gap questions, and the full PRD text.
+Your job is to determine if the PRD already clearly answers each question.
+
+PRD:
+${project.prd_text}
+
+Questions to validate (batch ${batchIdx + 1}):
+${JSON.stringify(batch.map(q => ({ id: q._globalIdx, question: q.question, context: q.context })))}
+
+For each question, check the PRD text carefully. If the PRD has a CLEAR and UNAMBIGUOUS answer, mark as "answered" and provide the exact source_quote. If the PRD does not answer it, contradicts itself, or is vague, mark as "unanswered".
+
+Return ONLY a JSON array (no markdown, no preamble):
+[
+  {
+    "id": <global id from input>,
+    "verdict": "answered" | "unanswered",
+    "source_quote": "exact quote from PRD if answered, otherwise empty string"
+  }
+]`;
+
+        try {
+          const criticRaw = await callModel('openai/gpt-oss-120b', criticPrompt);
+          return parseJSON(criticRaw);
+        } catch (err) {
+          console.error(`[Review Critic] Batch ${batchIdx + 1} failed, keeping all questions in batch:`, err);
+          return []; // safe fallback: keep all questions in this batch
+        }
+      }));
+
+      // Merge all batch results into a flat lookup map: globalIdx -> verdict
+      const verdictMap = new Map();
+      for (const batchResult of batchResults) {
+        if (Array.isArray(batchResult)) {
+          for (const r of batchResult) {
+            if (r && typeof r.id === 'number' && r.verdict) {
+              verdictMap.set(r.id, r);
+            }
+          }
+        }
+      }
+
+      // Filter out questions marked "answered" by the critic
+      validatedQuestions = rawQuestions.filter((q, i) => {
+        const result = verdictMap.get(i);
+        if (result && result.verdict === 'answered') {
+          console.log(`[Review Critic] Dropped answered Q${i}: "${q.question}" → "${result.source_quote}"`);
+          return false;
+        }
+        return true;
+      });
+
+      console.log(`[Review Pipeline] Phase 4 complete. Critic filtered ${rawQuestions.length - validatedQuestions.length} answered questions. ${validatedQuestions.length} remain.`);
+    }
+
+    // Phase 5: Merge, Dedup & Rank
+    // Rank by severity: critical -> moderate -> minor
+    const severityOrder = { critical: 0, moderate: 1, minor: 2 };
+    const finalQuestions = validatedQuestions
+      .filter((q, i, self) => self.findIndex(t => t.question.toLowerCase() === q.question.toLowerCase()) === i) // exact dedup
+      .sort((a, b) => (severityOrder[a.severity] ?? 99) - (severityOrder[b.severity] ?? 99));
+
+    console.log(`[Review Pipeline] Phase 5 complete. ${finalQuestions.length} questions survived after dedup & rank.`);
+
+    // If no questions, auto-skip review and jump straight to ingestion!
+    if (finalQuestions.length === 0) {
       await query(
-        "UPDATE projects SET review_state = 'answered' WHERE id = $1",
-        [id]
+        `UPDATE projects 
+         SET review_state = 'answered',
+             modules_analyzed = $1,
+             data_model_draft = $2,
+             api_surface_draft = $3,
+             integrations_draft = $4,
+             review_risks = $5,
+             review_assumptions = $6,
+             review_questions = '[]'::jsonb
+         WHERE id = $7`,
+        [
+          JSON.stringify(headingsList),
+          JSON.stringify(archDraft.data_model || []),
+          JSON.stringify(archDraft.api_surface || []),
+          JSON.stringify(archDraft.integrations || []),
+          JSON.stringify(archDraft.risks || []),
+          JSON.stringify(archDraft.assumptions || []),
+          id
+        ]
       );
 
       await featureExtractionQueue.add('extract-features', { projectId: id }, {
@@ -607,18 +916,57 @@ ${project.prd_text}`;
         backoff: { type: 'exponential', delay: 1000 },
       });
 
-      return { review_state: 'answered', message: 'No blockers found. Ingestion auto-started.', questions: [] };
+      return {
+        review_state: 'answered',
+        message: 'No blockers found. Ingestion auto-started.',
+        questions: [],
+        modules_analyzed: headingsList,
+        data_model_draft: archDraft.data_model || [],
+        api_surface_draft: archDraft.api_surface || [],
+        integrations_draft: archDraft.integrations || [],
+        review_risks: archDraft.risks || [],
+        review_assumptions: archDraft.assumptions || []
+      };
     }
 
+    // Save outputs to projects table
     await query(
-      "UPDATE projects SET review_state = 'reviewing', review_questions = $1 WHERE id = $2",
-      [JSON.stringify(review.questions), id]
+      `UPDATE projects 
+       SET review_state = 'reviewing', 
+           review_questions = $1,
+           modules_analyzed = $2,
+           data_model_draft = $3,
+           api_surface_draft = $4,
+           integrations_draft = $5,
+           review_risks = $6,
+           review_assumptions = $7
+       WHERE id = $8`,
+      [
+        JSON.stringify(finalQuestions),
+        JSON.stringify(headingsList),
+        JSON.stringify(archDraft.data_model || []),
+        JSON.stringify(archDraft.api_surface || []),
+        JSON.stringify(archDraft.integrations || []),
+        JSON.stringify(archDraft.risks || []),
+        JSON.stringify(archDraft.assumptions || []),
+        id
+      ]
     );
 
-    return { review_state: 'reviewing', ...review };
+    return {
+      review_state: 'reviewing',
+      summary: `The PRD has been reviewed. Identified ${finalQuestions.filter(q => q.severity === 'critical').length} critical schema gaps and ${finalQuestions.length} total questions.`,
+      questions: finalQuestions,
+      modules_analyzed: headingsList,
+      data_model_draft: archDraft.data_model || [],
+      api_surface_draft: archDraft.api_surface || [],
+      integrations_draft: archDraft.integrations || [],
+      review_risks: archDraft.risks || [],
+      review_assumptions: archDraft.assumptions || []
+    };
   } catch (err) {
-    console.error('[Review Error]', err);
-    return reply.code(500).send({ error: 'Review failed: ' + err.message });
+    console.error('[Review Pipeline Error]', err);
+    return reply.code(500).send({ error: 'Review pipeline failed: ' + err.message });
   }
 });
 
@@ -657,7 +1005,59 @@ server.post('/api/projects/:id/clarify', async (request, reply) => {
     backoff: { type: 'exponential', delay: 1000 },
   });
 
-  return { review_state: 'answered', message: 'Clarifications applied. Ingestion started.' };
+  // Async architecture re-draft using enriched PRD (reflects answers)
+  const headingsList = (project.modules_analyzed || []);
+  const archRedraftPrompt = `You are a Principal Software Architect. The PRD below includes original requirements AND a set of clarifications that have been confirmed by the product team. Use the clarifications to resolve any ambiguities and produce the final, definitive architecture draft.
+
+PRD (with confirmed clarifications):
+${enrichedPRD}
+
+Modules Analyzed: ${headingsList.join(', ')}
+
+The clarifications section at the bottom of the PRD overrides any assumptions you would otherwise make. Make sure the data model, API surface, integrations, risks and assumptions all reflect those confirmed answers.
+
+Generate:
+1. "data_model": Final relational schema. For each table, list core columns, relationships, and a confidence level (0.0 to 1.0).
+2. "api_surface": Definitive API endpoints with HTTP method, path, module name, and auth_required.
+3. "integrations": Third-party services with usage notes and confidence level.
+4. "risks": Remaining architectural risks after clarifications are applied.
+5. "assumptions": Technical assumptions that were resolved by the clarifications.
+
+Return ONLY valid JSON (no markdown fences, no preamble):
+{
+  "data_model": [{ "table": "...", "columns": ["..."], "relationships": ["..."], "confidence": 0.95 }],
+  "api_surface": [{ "method": "POST", "endpoint": "/api/...", "module": "...", "auth_required": true }],
+  "integrations": [{ "service": "...", "usage": "...", "confidence": 0.9 }],
+  "risks": [{ "area": "...", "description": "..." }],
+  "assumptions": [{ "assertion": "...", "reasoning": "..." }]
+}`;
+
+  // Fire and forget — don't block the clarify response
+  callModel('openai/gpt-oss-120b', archRedraftPrompt)
+    .then(raw => parseJSON(raw))
+    .then(archDraft => {
+      return query(
+        `UPDATE projects
+         SET data_model_draft = $1,
+             api_surface_draft = $2,
+             integrations_draft = $3,
+             review_risks = $4,
+             review_assumptions = $5
+         WHERE id = $6`,
+        [
+          JSON.stringify(archDraft.data_model || []),
+          JSON.stringify(archDraft.api_surface || []),
+          JSON.stringify(archDraft.integrations || []),
+          JSON.stringify(archDraft.risks || []),
+          JSON.stringify(archDraft.assumptions || []),
+          id
+        ]
+      );
+    })
+    .then(() => console.log(`[Arch Re-draft] Architecture updated for project ${id} after clarifications`))
+    .catch(err => console.error(`[Arch Re-draft] Failed for project ${id}:`, err));
+
+  return { review_state: 'answered', message: 'Clarifications applied. Ingestion started. Architecture re-drafting in background.' };
 });
 
 // PRD ingestion
@@ -999,7 +1399,7 @@ server.get('/api/projects/:id/chat/sessions/:session_id/history', async (request
       if (typeof proposedVal === 'string') {
         try {
           proposedVal = JSON.parse(proposedVal);
-        } catch (e) {}
+        } catch (e) { }
       }
       suggestionsByTrigger[key].push({
         ...sug,
@@ -1092,7 +1492,7 @@ server.get('/api/projects/:id/chat/history', async (request, reply) => {
       if (typeof proposedVal === 'string') {
         try {
           proposedVal = JSON.parse(proposedVal);
-        } catch (e) {}
+        } catch (e) { }
       }
       suggestionsByTrigger[key].push({
         ...sug,
@@ -1775,15 +2175,15 @@ server.post('/api/todos/:id/sync/redmine', async (request, reply) => {
 // Optionally filter by requirements-os project ID
 server.get('/api/redmine/projects', async (request, reply) => {
   const { project_id } = request.query;
-  
+
   try {
     let redmineProjectId;
     if (project_id) {
       redmineProjectId = await getRedmineProjectId(project_id);
     }
-    
+
     const result = await redmineRequest('projects', 'GET');
-    return { 
+    return {
       projects: result.projects || [],
       current_project: redmineProjectId || REDMINE_PROJECT_IDENTIFIER,
     };
@@ -1803,7 +2203,7 @@ server.put('/api/projects/:id/redmine-project', async (request, reply) => {
       return reply.code(404).send({ error: 'Project not found' });
     }
 
-    await query('UPDATE projects SET redmine_project_identifier = $1, updated_at = NOW() WHERE id = $2', 
+    await query('UPDATE projects SET redmine_project_identifier = $1, updated_at = NOW() WHERE id = $2',
       [redmine_project_identifier || null, id]);
 
     return { success: true, redmine_project_identifier };
@@ -1816,29 +2216,29 @@ server.put('/api/projects/:id/redmine-project', async (request, reply) => {
 // Update redmine/status to accept optional project_id
 server.get('/api/redmine/status', async (request, reply) => {
   const { project_id } = request.query;
-  
+
   if (!REDMINE_API_KEY) {
     return { configured: false, message: 'Redmine API key not set' };
   }
-  
+
   try {
     let checkProject = REDMINE_PROJECT_IDENTIFIER;
     if (project_id) {
       checkProject = await getRedmineProjectId(project_id);
     }
-    
+
     const result = await redmineRequest('projects/' + checkProject);
-    return { 
-      configured: true, 
-      connected: true, 
+    return {
+      configured: true,
+      connected: true,
       project: result.project?.name || checkProject,
       url: REDMINE_URL,
       redmine_project_identifier: checkProject,
     };
   } catch (err) {
-    return { 
-      configured: true, 
-      connected: false, 
+    return {
+      configured: true,
+      connected: false,
       error: err.message,
       redmine_project_identifier: project_id ? await getRedmineProjectId(project_id) : REDMINE_PROJECT_IDENTIFIER,
     };

@@ -7,6 +7,15 @@ CREATE TABLE IF NOT EXISTS projects (
   prd_text      TEXT,
   summary       TEXT,
   redmine_project_identifier TEXT,  -- Which Redmine project this syncs to
+  review_state  TEXT      DEFAULT 'idle',
+  review_questions JSONB,
+  review_answers JSONB,
+  modules_analyzed JSONB,
+  data_model_draft JSONB,
+  api_surface_draft JSONB,
+  integrations_draft JSONB,
+  review_risks JSONB,
+  review_assumptions JSONB,
   created_at    TIMESTAMPTZ DEFAULT now(),
   updated_at    TIMESTAMPTZ DEFAULT now()
 );
@@ -74,6 +83,17 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   role          TEXT NOT NULL,
   -- role values: user | assistant
   content       TEXT NOT NULL,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+-- Review jobs table for parallel chunk processing
+CREATE TABLE IF NOT EXISTS review_jobs (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id    UUID REFERENCES projects(id) ON DELETE CASCADE,
+  module        TEXT NOT NULL,
+  status        TEXT DEFAULT 'pending',
+  -- status values: pending | done | failed
+  result        JSONB,
   created_at    TIMESTAMPTZ DEFAULT now()
 );
 
