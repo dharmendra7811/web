@@ -4,8 +4,10 @@ export interface Project {
   name: string;
   prd_text?: string;
   summary?: string;
+  state?: string;
   review_state?: string;
   review_questions?: any;
+  pipeline_run_id?: string;
   features?: Feature[];  // Nested features with todos
   created_at: string;
   updated_at: string;
