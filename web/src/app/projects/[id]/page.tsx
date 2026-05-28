@@ -2,26 +2,18 @@
 
 import Link from 'next/link';
 import { useEffect, useState, use } from 'react';
-import UploadZone from '@/app/components/prd/UploadZone';
-import ReviewPanel from '@/app/components/prd/ReviewPanel';
+import BrainstormChat from '@/app/components/chat/BrainstormChat';
 import ArchitecturePanel from '@/app/components/prd/ArchitecturePanel';
-import IngestionProgress from '@/app/components/prd/IngestionProgress';
 import FolderTree from '@/app/components/features/FolderTree';
-import ChatPanel from '@/app/components/chat/ChatPanel';
 import GraphView from '@/app/components/graph/GraphView';
 import ProjectHeader from '@/app/components/layout/ProjectHeader';
-import { getProject, updateProjectPRD, syncProjectToRedmine, getRedmineStatus, getRedmineProjects, setRedmineProject } from '@/lib/api';
+import { getProject, syncProjectToRedmine, getRedmineStatus, getRedmineProjects, setRedmineProject } from '@/lib/api';
 
 export default function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [project, setProject] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<'list' | 'graph'>('list');
-  const [editing, setEditing] = useState(false);
-  const [prdText, setPrdText] = useState('');
-  const [sidebarTab, setSidebarTab] = useState<'prd' | 'arch'>('prd');
-
-  // Theme state: default to dark, save/load from localStorage
+  const [view, setView] = useState<'list' | 'graph' | 'arch'>('list');
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
 
   // Redmine sync state
@@ -32,9 +24,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
   useEffect(() => {
     const savedTheme = localStorage.getItem('requirements-os-theme');
-    if (savedTheme === 'light' || savedTheme === 'dark') {
-      setTheme(savedTheme);
-    }
+    if (savedTheme === 'light' || savedTheme === 'dark') setTheme(savedTheme);
   }, []);
 
   const handleToggleTheme = () => {
@@ -45,9 +35,6 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
   useEffect(() => {
     loadProject();
-    const handleUpdate = () => loadProject();
-    window.addEventListener('prd-updated', handleUpdate);
-    return () => window.removeEventListener('prd-updated', handleUpdate);
   }, [id]);
 
   const loadProject = async () => {
@@ -55,7 +42,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     try {
       const data = await getProject(id);
       setProject(data);
-      setPrdText(data.prd_text || '');
+      return data;
     } catch (error) {
       console.error(error);
     } finally {
@@ -63,44 +50,37 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     }
   };
 
-  const handlePRDChange = (text: string) => setPrdText(text);
-
-  const handlePRDSubmit = async (confirmedSections?: any[]) => {
-    setLoading(true);
-    try {
-      await updateProjectPRD(id, prdText);
-      await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000'}/api/projects/${id}/review`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirmedSections }),
-      });
-      await loadProject();
-      setEditing(false);
-    } catch (error) {
-      console.error(error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // Poll while entity-first extraction runs in background (state === 'parsing')
   useEffect(() => {
-    checkRedmineStatus();
-  }, [id]);
+    if (!project || project.state !== 'parsing') return;
+    const interval = setInterval(async () => {
+      try {
+        const data = await getProject(id);
+        setProject(data);
+        if (data.state !== 'parsing') {
+          clearInterval(interval);
+        }
+      } catch (e) { /* ignore */ }
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [project?.state]);
+
+  const handleFeatureChange = () => loadProject();
+
+  useEffect(() => { checkRedmineStatus(); }, [id]);
 
   const checkRedmineStatus = async () => {
     try {
       const status = await getRedmineStatus(id);
       setRedmineStatus(status);
-    } catch (err) {
-      console.error('Failed to check Redmine status:', err);
-    }
+    } catch (err) { console.error('Redmine status:', err); }
   };
 
   const handleSyncToRedmine = async () => {
     setSyncing(true);
     try {
       const result = await syncProjectToRedmine(id);
-      alert(`Successfully synced to Redmine! Synced ${result.features?.length || 0} features and ${result.todos?.length || 0} todos.`);
+      alert(`Synced! ${result.features?.length || 0} features and ${result.todos?.length || 0} todos.`);
       await checkRedmineStatus();
     } catch (err: any) {
       alert(`Sync failed: ${err.message}`);
@@ -113,34 +93,23 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     try {
       const data = await getRedmineProjects(id);
       setRedmineProjects(data.projects || []);
-      if (data.current_project) {
-        setSelectedRedmineProject(data.current_project);
-      }
-    } catch (err) {
-      console.error('Failed to load Redmine projects:', err);
-    }
+      if (data.current_project) setSelectedRedmineProject(data.current_project);
+    } catch (err) { console.error('Redmine projects:', err); }
   };
 
   useEffect(() => {
-    if (project?.redmine_project_identifier) {
-      setSelectedRedmineProject(project.redmine_project_identifier);
-    }
+    if (project?.redmine_project_identifier) setSelectedRedmineProject(project.redmine_project_identifier);
     loadRedmineProjects();
   }, [id, project?.redmine_project_identifier]);
 
   const handleSetRedmineProject = async () => {
-    if (!selectedRedmineProject) {
-      alert('Please select a Redmine project');
-      return;
-    }
+    if (!selectedRedmineProject) { alert('Please select a Redmine project'); return; }
     try {
       await setRedmineProject(id, selectedRedmineProject);
       alert(`Redmine project set to: ${selectedRedmineProject}`);
       await loadProject();
       await checkRedmineStatus();
-    } catch (err: any) {
-      alert(`Failed to set Redmine project: ${err.message}`);
-    }
+    } catch (err: any) { alert(`Failed: ${err.message}`); }
   };
 
   if (loading && !project) {
@@ -148,7 +117,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       <div className={`h-screen w-full flex items-center justify-center font-mono text-sm ${theme === 'dark' ? 'bg-[#0d1117] text-[#c9d1d9]' : 'bg-[#ffffff] text-[#24292f]'}`}>
         <div className="flex gap-3 items-center">
           <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent animate-spin"></div>
-          <span>[SYSTEM] Initializing Workspace Data...</span>
+          <span>[SYSTEM] Initializing Workspace...</span>
         </div>
       </div>
     );
@@ -157,17 +126,13 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   return (
     <div className={`h-screen w-full flex flex-col font-sans overflow-hidden ${theme === 'dark' ? 'bg-[#0d1117] text-[#c9d1d9]' : 'bg-[#ffffff] text-[#24292f]'}`}>
 
-      {/* Utility Top Nav / Header */}
+      {/* Top Header */}
       <div className={`flex-none h-14 border-b flex items-center justify-between px-4 ${theme === 'dark' ? 'bg-[#161b22] border-[#30363d]' : 'bg-[#f6f8fa] border-[#d0d7de]'}`}>
-
-        {/* Left: Project Header Component */}
         <div className="flex-1 overflow-hidden h-full flex items-center min-w-0">
-          <ProjectHeader project={project} onUpdate={setEditing} theme={theme} />
+          <ProjectHeader project={project} onUpdate={loadProject} theme={theme} />
         </div>
 
-        {/* Right: Controls Toolbar */}
         <div className="flex items-center gap-3 ml-4 flex-none">
-
           {/* Redmine Toolset */}
           {redmineStatus?.configured && (
             <div className={`flex items-center border rounded text-xs ${theme === 'dark' ? 'border-[#30363d] bg-[#0d1117]' : 'border-[#d0d7de] bg-white'}`}>
@@ -216,6 +181,12 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             >
               Topology
             </button>
+            <button
+              onClick={() => setView('arch')}
+              className={`px-3 py-1 font-medium border-l ${theme === 'dark' ? 'border-[#30363d]' : 'border-[#d0d7de]'} ${view === 'arch' ? (theme === 'dark' ? 'bg-[#30363d] text-white' : 'bg-[#e5e7eb] text-black') : (theme === 'dark' ? 'hover:bg-[#161b22]' : 'hover:bg-[#f6f8fa]')}`}
+            >
+              Architecture
+            </button>
           </div>
 
           {/* Theme Toggle */}
@@ -236,82 +207,46 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         </div>
       </div>
 
-      {/* Main Content Area */}
+      {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
-        {view === 'list' ? (
-          <>
-            {/* Left Sidebar: PRD Admin */}
-            <div className={`w-[25%] min-w-[300px] max-w-[450px] border-r flex flex-col overflow-hidden ${theme === 'dark' ? 'border-[#30363d] bg-[#0d1117]' : 'border-[#d0d7de] bg-[#f6f8fa]'}`}>
-              {/* Sidebar Tab Headers */}
-              <div className={`flex border-b text-[9px] uppercase font-bold tracking-wider sticky top-0 z-10 ${theme === 'dark' ? 'border-[#30363d] bg-[#161b22]' : 'border-[#d0d7de] bg-[#e5e7eb]'}`}>
-                <button
-                  onClick={() => setSidebarTab('prd')}
-                  className={`flex-1 py-2 text-center border-r transition-colors ${
-                    sidebarTab === 'prd'
-                      ? (theme === 'dark' ? 'bg-[#0d1117] text-white border-b-2 border-b-[#58a6ff] border-r-[#30363d]' : 'bg-[#ffffff] text-black border-b-2 border-b-[#0969da] border-r-[#d0d7de]')
-                      : (theme === 'dark' ? 'text-[#8b949e] border-r-[#30363d] hover:bg-[#21262d]' : 'text-[#57606a] border-r-[#d0d7de] hover:bg-[#f6f8fa]')
-                  }`}
-                >
-                  PRD Config
-                </button>
-                <button
-                  onClick={() => setSidebarTab('arch')}
-                  className={`flex-1 py-2 text-center transition-colors relative ${
-                    sidebarTab === 'arch'
-                      ? (theme === 'dark' ? 'bg-[#0d1117] text-white border-b-2 border-b-[#58a6ff]' : 'bg-[#ffffff] text-black border-b-2 border-b-[#0969da]')
-                      : (theme === 'dark' ? 'text-[#8b949e] hover:bg-[#21262d]' : 'text-[#57606a] hover:bg-[#f6f8fa]')
-                  }`}
-                >
-                  Architecture
-                  {(project?.data_model_draft?.length > 0) && (
-                    <span className="ml-1 text-[7px] text-[#3fb950]">●</span>
-                  )}
-                </button>
-              </div>
+        {/* Brainstorm Chat — primary panel */}
+        <div className={`flex-1 min-w-0 border-r ${theme === 'dark' ? 'border-[#30363d]' : 'border-[#d0d7de]'}`}>
+          <BrainstormChat projectId={id} theme={theme} onFeatureChange={handleFeatureChange} />
+        </div>
 
-              {/* Sidebar Tab Content */}
-              <div className="flex-1 overflow-y-auto">
-                {sidebarTab === 'prd' ? (
-                  <div className="p-4 space-y-6">
-                    {project?.review_state === 'reviewing' && project.review_questions ? (
-                      <ReviewPanel projectId={id} project={project} onClarify={loadProject} theme={theme} />
-                    ) : (
-                      <UploadZone projectId={id} onPRDChange={handlePRDChange} onPRDSubmit={handlePRDSubmit} editing={editing} theme={theme} initialText={project?.prd_text || ""} />
-                    )}
-
-                    {!editing && project.review_state !== 'reviewing' && (
-                      <div className={`mt-6 border-t pt-4 ${theme === 'dark' ? 'border-[#30363d]' : 'border-[#d0d7de]'}`}>
-                        <IngestionProgress projectId={id} theme={theme} />
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <ArchitecturePanel project={project} theme={theme} />
-                )}
-              </div>
+        {/* Right panel: Workspace Explorer / Graph / Architecture */}
+        {view === 'list' && (
+          <div className="w-[35%] min-w-[500px] max-w-[800px] flex flex-col overflow-hidden">
+            <div className={`px-4 py-2 border-b flex items-center justify-between shrink-0 ${theme === 'dark' ? 'bg-[#161b22] border-[#30363d]' : 'bg-[#f6f8fa] border-[#d0d7de]'}`}>
+              <h2 className={`text-xs font-bold uppercase tracking-wider ${theme === 'dark' ? 'text-[#8b949e]' : 'text-[#57606a]'}`}>
+                Workspace Explorer
+              </h2>
+              <span className={`text-[9px] ${theme === 'dark' ? 'text-[#484f58]' : 'text-[#8c959f]'}`}>
+                {project?.state || 'idle'}
+              </span>
             </div>
-
-            {/* Center Panel: Explorer (Folder Tree) */}
-            <div className={`flex-1 flex flex-col overflow-hidden ${theme === 'dark' ? 'bg-[#0d1117]' : 'bg-white'}`}>
-              <div className={`px-6 py-3 border-b flex items-center justify-between shadow-sm z-10 ${theme === 'dark' ? 'bg-[#161b22] border-[#30363d]' : 'bg-[#f6f8fa] border-[#d0d7de]'}`}>
-                <h2 className="text-lg font-bold tracking-tight">Workspace Explorer</h2>
-              </div>
-              <div className="flex-1 overflow-y-auto p-4 lg:p-6">
-                <FolderTree projectId={id} theme={theme} />
-              </div>
+            <div className="flex-1 overflow-y-auto p-3">
+              <FolderTree projectId={id} theme={theme} />
             </div>
+          </div>
+        )}
 
-            {/* Right Sidebar: Chat Assistant */}
-            <div className={`w-[25%] min-w-[320px] max-w-[500px] border-l flex flex-col ${theme === 'dark' ? 'border-[#30363d] bg-[#0d1117]' : 'border-[#d0d7de] bg-[#f6f8fa]'}`}>
-              <div className="flex-1 overflow-hidden relative">
-                <ChatPanel projectId={id} theme={theme} />
-              </div>
-            </div>
-          </>
-        ) : (
-          /* Graph View Fullscreen */
-          <div className={`flex-1 w-full h-full relative ${theme === 'dark' ? 'bg-[#0d1117]' : 'bg-[#ffffff]'}`}>
+        {view === 'graph' && (
+          <div className="flex-1 w-full h-full relative">
             <GraphView projectId={id} />
+          </div>
+        )}
+
+        {view === 'arch' && (
+          <div className="w-[35%] min-w-[320px] max-w-[500px] flex flex-col overflow-hidden">
+            <div className={`px-4 py-2 border-b shrink-0 ${theme === 'dark' ? 'bg-[#161b22] border-[#30363d]' : 'bg-[#f6f8fa] border-[#d0d7de]'}`}>
+              <h2 className={`text-xs font-bold uppercase tracking-wider ${theme === 'dark' ? 'text-[#8b949e]' : 'text-[#57606a]'}`}>
+                Architecture Foundation
+              </h2>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              <ArchitecturePanel project={project} theme={theme} />
+            </div>
           </div>
         )}
       </div>

@@ -14,19 +14,27 @@ export default function ArchitecturePanel({ project, theme = 'dark' }: Architect
   const [liveProject, setLiveProject] = useState(project);
   const [polling, setPolling] = useState(false);
 
-  const dataModelDraft = liveProject.data_model_draft || [];
-  const apiSurfaceDraft = liveProject.api_surface_draft || [];
+  const dataModelDraft = (liveProject.data_model_draft || [])
+    .filter((t: any) => t && typeof t === 'object' && !Array.isArray(t)); // skip strings, SQL
+  const apiSurfaceDraft = (liveProject.api_surface_draft || [])
+    .map((ep: any) => {
+      if (typeof ep === 'string') {
+        const m = ep.match(/^(GET|POST|PUT|PATCH|DELETE)\s+(\S+)/);
+        return m ? { method: m[1], endpoint: m[2] } : null;
+      }
+      return ep;
+    })
+    .filter((ep: any) => ep && ep.method && ep.endpoint); // skip non-endpoints
   const integrationsDraft = liveProject.integrations_draft || [];
   const reviewRisks = liveProject.review_risks || [];
   const reviewAssumptions = liveProject.review_assumptions || [];
   const modulesAnalyzed = liveProject.modules_analyzed || [];
 
-  // Poll for architecture re-draft to complete (after clarify, re-draft runs in background ~30s)
+  // Poll for architecture data to populate (triggers on old review_state OR new state)
   useEffect(() => {
-    if (liveProject.review_state !== 'answered') return;
-
-    // If data exists already, no need to poll
-    if (dataModelDraft.length > 0) return;
+    const hasData = dataModelDraft.length > 0 || apiSurfaceDraft.length > 0 || reviewRisks.length > 0;
+    const isProcessing = liveProject.review_state === 'answered' || liveProject.state === 'parsing' || liveProject.state === 'exploring';
+    if (hasData || !isProcessing) return;
 
     setPolling(true);
     let attempts = 0;
@@ -143,15 +151,18 @@ export default function ArchitecturePanel({ project, theme = 'dark' }: Architect
                       )}
                     </div>
                     <div className="flex flex-wrap gap-1 mb-2">
-                      {table.columns?.map((col: string, ci: number) => (
+                      {table.columns?.map((col: string | {name: string, type?: string}, ci: number) => {
+                        const colName = typeof col === 'string' ? col : col.name;
+                        return (
                         <span key={ci} className={`text-[8px] px-1 border rounded ${
-                          col === 'id' || col.endsWith('_id')
+                          colName === 'id' || colName.endsWith('_id')
                             ? (theme === 'dark' ? 'bg-[#1f6feb]/10 border-[#1f6feb]/30 text-[#58a6ff]' : 'bg-[#0969da]/10 border-[#0969da]/30 text-[#0969da]')
                             : (theme === 'dark' ? 'bg-[#161b22] border-[#30363d] text-[#c9d1d9]' : 'bg-[#f6f8fa] border-[#d0d7de] text-[#24292f]')
                         }`}>
-                          {col}
+                          {colName}
                         </span>
-                      ))}
+                        );
+                      })}
                     </div>
                     {table.relationships?.length > 0 && (
                       <div className="space-y-0.5">

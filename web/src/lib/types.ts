@@ -21,6 +21,9 @@ export interface Feature {
   status: 'draft' | 'ready' | 'in_progress' | 'done';
   order_index: number;
   human_locked: boolean;
+  module?: string;
+  confidence?: number;
+  critic_notes?: string;
   created_at: string;
   updated_at: string;
 }

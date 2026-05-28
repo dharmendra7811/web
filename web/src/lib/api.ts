@@ -236,6 +236,8 @@ export interface Project {
   name: string;
   prd_text?: string;
   summary?: string;
+  state?: string;
+  entity_graph?: any;
   review_state?: string;
   review_questions?: any;
   features?: Feature[];  // Nested features with todos
@@ -255,6 +257,9 @@ export interface Feature {
   human_locked: boolean;
   ticket_id?: string;
   ticket_adapter?: 'linear' | 'jira' | 'github' | 'redmine';
+  module?: string;
+  confidence?: number;
+  critic_notes?: string;
   created_at: string;
   updated_at: string;
 }
@@ -316,6 +321,149 @@ export async function syncTodoToRedmine(todoId: string) {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || 'Failed to sync todo to Redmine');
+  }
+  return res.json();
+}
+
+export async function sendBrainstormMessage(projectId: string, message: string, sessionId?: string, file?: File) {
+  if (file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (message) formData.append('message', message);
+    if (sessionId) formData.append('session_id', sessionId);
+
+    const res = await fetch(`${API_URL}/api/projects/${projectId}/brainstorm`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || 'Brainstorm failed');
+    }
+    return res.json();
+  }
+
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/brainstorm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, session_id: sessionId }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Brainstorm failed');
+  }
+  return res.json();
+}
+
+export async function sendBrainstormCommand(projectId: string, command: string, sessionId?: string) {
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/brainstorm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command, session_id: sessionId }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Brainstorm command failed');
+  }
+  return res.json();
+}
+
+export async function sendBrainstormMessageStream(
+  projectId: string,
+  message: string,
+  sessionId: string | undefined,
+  onToken: (token: string) => void
+): Promise<any> {
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/brainstorm/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, session_id: sessionId }),
+  });
+  if (!res.ok || !res.body) throw new Error('Stream request failed');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalData: any = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    // SSE lines are separated by \n\n
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop() ?? '';
+
+    for (const part of parts) {
+      const line = part.trim();
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const evt = JSON.parse(line.slice(6));
+        if (evt.type === 'token') onToken(evt.token);
+        else if (evt.type === 'done') finalData = evt;
+        else if (evt.type === 'error') throw new Error(evt.error);
+      } catch (e) { /* skip malformed */ }
+    }
+  }
+  return finalData;
+}
+
+export async function clarifyGap(
+  projectId: string,
+  gapIndex: number,
+  answer: string,
+  sessionId: string | undefined,
+  onToken: (token: string) => void
+): Promise<{
+  session_id: string;
+  state: string;
+  resolved: boolean;
+  all_gaps_resolved: boolean;
+  assistant_response: string;
+  gap_index: number;
+  next_gap_index: number | null;
+} | null> {
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/clarify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answer, gap_index: gapIndex, session_id: sessionId }),
+  });
+  if (!res.ok || !res.body) throw new Error('Clarify request failed');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalData: any = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop() ?? '';
+    for (const part of parts) {
+      const line = part.trim();
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const evt = JSON.parse(line.slice(6));
+        if (evt.type === 'token') onToken(evt.token);
+        else if (evt.type === 'done') finalData = evt;
+        else if (evt.type === 'error') throw new Error(evt.error);
+      } catch (e) { /* skip malformed */ }
+    }
+  }
+  return finalData;
+}
+
+
+export async function entityFirstExtract(projectId: string) {
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/entity-first`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Entity-first extraction failed');
   }
   return res.json();
 }

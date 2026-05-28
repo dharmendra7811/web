@@ -381,7 +381,7 @@ export default function FolderTree({ projectId, theme = 'dark' }: FolderTreeProp
                         
                         return (
                           <div key={feat.id} className="group/feat flex flex-col">
-                            <div className={`flex items-center justify-between px-2 py-1.5 cursor-pointer rounded transition-colors ${
+                            <div className={`flex items-center justify-between gap-4 px-2 py-1.5 cursor-pointer rounded transition-colors ${
                               theme === 'dark' ? 'hover:bg-[#161b22]' : 'hover:bg-[#e5e7eb]'
                             }`}>
                               <div className="flex items-center gap-2 flex-1 min-w-0" onClick={() => toggleExpand(featKey)}>
@@ -406,7 +406,7 @@ export default function FolderTree({ projectId, theme = 'dark' }: FolderTreeProp
                                 )}
                               </div>
 
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 shrink-0">
                                 {isEditing ? (
                                   <div className="flex items-center gap-2 ml-3">
                                     <button onClick={() => handleUpdateFeature(feat.id)} className="text-[#3fb950] px-2 py-1 bg-[#3fb950]/10 hover:bg-[#3fb950]/20 rounded font-bold">SAVE</button>
@@ -436,6 +436,18 @@ export default function FolderTree({ projectId, theme = 'dark' }: FolderTreeProp
                                   feat.description && <div className={`px-2 py-1 ${theme === 'dark' ? 'text-[#8b949e]' : 'text-[#57606a]'}`}>/* {feat.description} */</div>
                                 )}
 
+                                {/* Critic notes — flagged by pipeline Stage 4/5 */}
+                                {feat.critic_notes && (
+                                  <div className={`px-2 py-1.5 border-l-2 text-xs leading-relaxed ${
+                                    theme === 'dark'
+                                      ? 'border-[#d29922] bg-[#d29922]/5 text-[#d29922]'
+                                      : 'border-[#9a6700] bg-[#fff8c5] text-[#9a6700]'
+                                  }`}>
+                                    <span className="font-bold uppercase tracking-wide text-[10px] mr-1">⚠ CRITIC</span>
+                                    {feat.critic_notes}
+                                  </div>
+                                )}
+
                                 {/* Todos */}
                                 <div className="mt-2 flex flex-col gap-1.5">
                                   {feat.todos?.map((todo) => {
@@ -444,13 +456,13 @@ export default function FolderTree({ projectId, theme = 'dark' }: FolderTreeProp
 
                                     return (
                                       <div key={todo.id} className="group/todo flex flex-col">
-                                        <div className={`flex items-start justify-between px-2 py-1.5 cursor-pointer rounded ${theme === 'dark' ? 'hover:bg-[#161b22]' : 'hover:bg-[#e5e7eb]'}`}>
-                                          <div className="flex items-start gap-2 flex-1 min-w-0 pt-0.5" onClick={() => toggleExpand(`todo-${todo.id}`)}>
+                                        <div className={`flex items-center justify-between gap-4 px-2 py-1.5 cursor-pointer rounded ${theme === 'dark' ? 'hover:bg-[#161b22]' : 'hover:bg-[#e5e7eb]'}`}>
+                                          <div className="flex items-center gap-2 flex-1 min-w-0 pt-0.5" onClick={() => toggleExpand(`todo-${todo.id}`)}>
                                             <span className={`mt-0.5 transform transition-transform duration-100 ${theme === 'dark' ? 'text-[#8b949e]' : 'text-[#57606a]'} ${isTodoExpanded ? 'rotate-90' : ''}`}>
                                               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
                                             </span>
                                             
-                                            <div className="flex flex-col flex-1">
+                                            <div className="flex flex-col flex-1 min-w-0">
                                               {isTodoEditing ? (
                                                 <input 
                                                   type="text" 
@@ -468,16 +480,16 @@ export default function FolderTree({ projectId, theme = 'dark' }: FolderTreeProp
                                             </div>
                                           </div>
 
-                                          <div className="flex items-center gap-2 mt-0.5">
+                                          <div className="flex items-center gap-2 mt-0.5 shrink-0">
                                             <select
                                               value={todo.status}
                                               onChange={(e) => handleStatusChange(todo.id, e.target.value)}
                                               onClick={(e) => e.stopPropagation()}
-                                              className={`text-xs uppercase font-bold py-1 px-2 rounded bg-transparent border outline-none appearance-none cursor-pointer ${
-                                                todo.status === 'done' ? 'text-[#3fb950] border-[#3fb950]/30' :
-                                                todo.status === 'in_progress' ? 'text-[#58a6ff] border-[#58a6ff]/30' :
-                                                todo.status === 'blocked' ? 'text-[#f85149] border-[#f85149]/30' :
-                                                theme === 'dark' ? 'text-[#8b949e] border-[#30363d]' : 'text-[#57606a] border-[#d0d7de]'
+                                              className={`text-xs uppercase font-bold py-1 px-2 rounded border outline-none appearance-none cursor-pointer ${
+                                                todo.status === 'done' ? 'bg-[#3fb950]/10 text-[#3fb950] border-[#3fb950]/30' :
+                                                todo.status === 'in_progress' ? 'bg-[#58a6ff]/10 text-[#58a6ff] border-[#58a6ff]/30' :
+                                                todo.status === 'blocked' ? 'bg-[#f85149]/10 text-[#f85149] border-[#f85149]/30' :
+                                                theme === 'dark' ? 'bg-[#161b22] text-[#8b949e] border-[#30363d]' : 'bg-[#f6f8fa] text-[#57606a] border-[#d0d7de]'
                                               }`}
                                             >
                                               <option value="open">[OPEN]</option>

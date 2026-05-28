@@ -40,32 +40,42 @@ export default function UploadZone({
   }, [initialText, editing]);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
-    if (!selectedFile) return;
-    setFile(selectedFile);
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
     setParsing(true);
 
     try {
-      const ext = selectedFile.name.split('.').pop()?.toLowerCase();
+      let combinedText = '';
+      const filenames: string[] = [];
 
-      if (ext === 'txt' || ext === 'md') {
-        const text = await readFileAsText(selectedFile);
-        setPrdText(text);
-        onPRDChange(text);
-      } else if (ext === 'pdf' || ext === 'docx') {
-        const formData = new FormData();
-        formData.append('file', selectedFile);
-        const res = await fetch(`${API_URL}/api/parse`, {
-          method: 'POST',
-          body: formData,
-        });
-        if (!res.ok) throw new Error(`Parse failed: ${res.status}`);
-        const { text } = await res.json();
-        setPrdText(text);
-        onPRDChange(text);
+      for (const selectedFile of files) {
+        const ext = selectedFile.name.split('.').pop()?.toLowerCase();
+
+        if (ext === 'txt' || ext === 'md') {
+          const text = await readFileAsText(selectedFile);
+          combinedText += (combinedText ? `\n\n## ADDITIONAL PRD (${selectedFile.name})\n` : '') + text;
+          filenames.push(selectedFile.name);
+        } else if (ext === 'pdf' || ext === 'docx') {
+          const formData = new FormData();
+          formData.append('file', selectedFile);
+          const res = await fetch(`${API_URL}/api/parse`, {
+            method: 'POST',
+            body: formData,
+          });
+          if (!res.ok) throw new Error(`Parse failed: ${res.status}`);
+          const { text } = await res.json();
+          combinedText += (combinedText ? `\n\n## ADDITIONAL PRD (${selectedFile.name})\n` : '') + text;
+          filenames.push(selectedFile.name);
+        }
+      }
+
+      if (!combinedText) {
+        setPrdText(`Unsupported file type(s)`);
+        onPRDChange(`Unsupported file type(s)`);
       } else {
-        setPrdText(`Unsupported file type: .${ext}`);
-        onPRDChange(`Unsupported file type: .${ext}`);
+        setFile(files[0]);
+        setPrdText(combinedText);
+        onPRDChange(combinedText);
       }
     } catch (err: any) {
       console.error('File parse error:', err);
@@ -274,6 +284,7 @@ export default function UploadZone({
         <div className="relative group">
           <input
             type="file"
+            multiple
             accept=".pdf,.docx,.md,.txt"
             onChange={handleFileChange}
             className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
