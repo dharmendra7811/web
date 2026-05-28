@@ -6,6 +6,8 @@ import BrainstormChat from '@/app/components/chat/BrainstormChat';
 import ArchitecturePanel from '@/app/components/prd/ArchitecturePanel';
 import FolderTree from '@/app/components/features/FolderTree';
 import GraphView from '@/app/components/graph/GraphView';
+import PipelineStatus from '@/app/components/prd/PipelineStatus';
+import CheckpointPanel from '@/app/components/prd/CheckpointPanel';
 import ProjectHeader from '@/app/components/layout/ProjectHeader';
 import { getProject, syncProjectToRedmine, getRedmineStatus, getRedmineProjects, setRedmineProject } from '@/lib/api';
 
@@ -21,6 +23,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [syncing, setSyncing] = useState(false);
   const [redmineProjects, setRedmineProjects] = useState<any[]>([]);
   const [selectedRedmineProject, setSelectedRedmineProject] = useState<string>('');
+  const [pipelinePhase, setPipelinePhase] = useState<string>('idle');
 
   useEffect(() => {
     const savedTheme = localStorage.getItem('requirements-os-theme');
@@ -167,6 +170,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             </div>
           )}
 
+          <PipelineStatus projectId={id} theme={theme} onPhaseChange={setPipelinePhase} />
+
           {/* View Toggles */}
           <div className={`flex items-center border rounded text-xs ${theme === 'dark' ? 'border-[#30363d] bg-[#0d1117]' : 'border-[#d0d7de] bg-white'}`}>
             <button
@@ -222,10 +227,11 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                 Workspace Explorer
               </h2>
               <span className={`text-[9px] ${theme === 'dark' ? 'text-[#484f58]' : 'text-[#8c959f]'}`}>
-                {project?.state || 'idle'}
+                {pipelinePhase !== 'idle' ? pipelinePhase : project?.state || 'idle'}
               </span>
             </div>
             <div className="flex-1 overflow-y-auto p-3">
+              <CheckpointPanel projectId={id} theme={theme} onResolved={loadProject} />
               <FolderTree projectId={id} theme={theme} />
             </div>
           </div>
