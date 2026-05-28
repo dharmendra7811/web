@@ -49,6 +49,9 @@ const REDMINE_PROJECT_IDENTIFIER = process.env.REDMINE_PROJECT_IDENTIFIER || 're
 const REDMINE_FEATURE_TRACKER_ID = parseInt(process.env.REDMINE_FEATURE_TRACKER_ID || '2');
 const REDMINE_TODO_TRACKER_ID = parseInt(process.env.REDMINE_TODO_TRACKER_ID || '1');
 
+// ── Routes ──
+server.register(require('./routes/pipeline'), { query });
+
 // ── Start ──
 const start = async () => {
   try {
