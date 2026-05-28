@@ -374,7 +374,7 @@ export default function FolderTree({ projectId, theme = 'dark' }: FolderTreeProp
                     {features.length === 0 ? (
                       <div className={`px-3 py-2 text-xs italic ${theme === 'dark' ? 'text-[#8b949e]' : 'text-[#57606a]'}`}>// empty</div>
                     ) : (
-                      features.map((feat) => {
+                      features.map((feat: Feature) => {
                         const featKey = `feature-${feat.id}`;
                         const isExpanded = expandedNodes[featKey];
                         const isEditing = editingFeatureId === feat.id;
@@ -450,7 +450,7 @@ export default function FolderTree({ projectId, theme = 'dark' }: FolderTreeProp
 
                                 {/* Todos */}
                                 <div className="mt-2 flex flex-col gap-1.5">
-                                  {feat.todos?.map((todo) => {
+                                  {feat.todos?.map((todo: Todo) => {
                                     const isTodoEditing = editingTodoId === todo.id;
                                     const isTodoExpanded = expandedNodes[`todo-${todo.id}`];
 
@@ -483,7 +483,7 @@ export default function FolderTree({ projectId, theme = 'dark' }: FolderTreeProp
                                           <div className="flex items-center gap-2 mt-0.5 shrink-0">
                                             <select
                                               value={todo.status}
-                                              onChange={(e) => handleStatusChange(todo.id, e.target.value)}
+                                              onChange={(e) => handleStatusChange(todo.id, e.target.value as Todo['status'])}
                                               onClick={(e) => e.stopPropagation()}
                                               className={`text-xs uppercase font-bold py-1 px-2 rounded border outline-none appearance-none cursor-pointer ${
                                                 todo.status === 'done' ? 'bg-[#3fb950]/10 text-[#3fb950] border-[#3fb950]/30' :

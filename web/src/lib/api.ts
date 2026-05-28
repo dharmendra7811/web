@@ -260,6 +260,7 @@ export interface Feature {
   module?: string;
   confidence?: number;
   critic_notes?: string;
+  todos?: Todo[];
   created_at: string;
   updated_at: string;
 }
