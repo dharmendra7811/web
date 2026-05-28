@@ -277,8 +277,93 @@ export interface Todo {
   human_locked: boolean;
   ticket_id?: string;
   ticket_adapter?: 'linear' | 'jira' | 'github' | 'redmine';
+  group?: 'BE' | 'FE' | 'Infra' | 'Auth';
   created_at?: string;
   updated_at?: string;
+}
+
+export interface PipelineRun {
+  id: string;
+  project_id: string;
+  run_number: number;
+  phase: 'idle' | 'chunking' | 'features' | 'critic' | 'awaiting_human' | 'schema' | 'api' | 'todo' | 'done' | 'failed';
+  resume_from_phase?: string;
+  swm?: SWM;
+  error?: string;
+  started_at?: string;
+  completed_at?: string;
+  created_at: string;
+}
+
+export interface SWM {
+  version: number;
+  prd_chunks?: Array<{ id: string; domain: string; tags: string[]; content: string }>;
+  entities?: Record<string, { fields: string[]; owned_by: string[]; assumptions: string[] }>;
+  features?: Array<{
+    id: string; title: string; description: string; domain: string;
+    actors: string[]; entities: string[];
+    implicit_features?: string[]; assumptions?: string[];
+  }>;
+  conflicts?: Array<{
+    id: string; type: string; entity: string; description: string;
+    resolved: boolean; resolution?: string;
+  }>;
+  conflicts_resolved?: Array<any>;
+  assumptions_log?: Array<{ entity: string; assumption: string; source: string; confidence: string }>;
+  gaps?: Array<{ type?: string; entity?: string; feature_title?: string; reason: string }>;
+  schema?: Array<{ table: string; columns: Array<{ name: string; type: string }> }>;
+  apis?: Array<{ method: string; endpoint: string; feature_title: string; schema_backing: string[]; description: string }>;
+}
+
+export interface PipelineCheckpoint {
+  id: string;
+  run_id: string;
+  questions: Array<{
+    id: string; question: string; options?: string[]; context?: string; conflict_id?: string;
+  }>;
+  answers?: Record<string, string>;
+  status: 'pending' | 'answered';
+  answered_at?: string;
+  created_at: string;
+}
+
+// ==================== Pipeline API Functions ====================
+
+export async function getPipelineRuns(projectId: string): Promise<PipelineRun[]> {
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/pipeline/runs`);
+  if (!res.ok) throw new Error('Failed to fetch pipeline runs');
+  return res.json();
+}
+
+export async function getPipelineRun(projectId: string, runId: string): Promise<PipelineRun> {
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/pipeline/runs/${runId}`);
+  if (!res.ok) throw new Error('Failed to fetch pipeline run');
+  return res.json();
+}
+
+export async function getPipelineCheckpoint(projectId: string, runId: string): Promise<PipelineCheckpoint | null> {
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/pipeline/runs/${runId}/checkpoint`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error('Failed to fetch checkpoint');
+  return res.json();
+}
+
+export async function submitCheckpointAnswers(projectId: string, runId: string, answers: Record<string, string>): Promise<{ success: boolean }> {
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/pipeline/runs/${runId}/checkpoint/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answers }),
+  });
+  if (!res.ok) throw new Error('Failed to submit checkpoint answers');
+  return res.json();
+}
+
+export async function retryPipelineRun(projectId: string, runId: string): Promise<{ success: boolean }> {
+  const res = await fetch(`${API_URL}/api/projects/${projectId}/pipeline/runs/${runId}/retry`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error('Failed to retry pipeline run');
+  return res.json();
 }
 
 // ==================== Redmine API Functions ====================
