@@ -49,8 +49,21 @@ const REDMINE_PROJECT_IDENTIFIER = process.env.REDMINE_PROJECT_IDENTIFIER || 're
 const REDMINE_FEATURE_TRACKER_ID = parseInt(process.env.REDMINE_FEATURE_TRACKER_ID || '2');
 const REDMINE_TODO_TRACKER_ID = parseInt(process.env.REDMINE_TODO_TRACKER_ID || '1');
 
+// ── Redmine Helper ──
+async function redmineRequest(endpoint, method = 'GET', data = null) {
+  const url = `${REDMINE_URL}/${endpoint}.json`;
+  const headers = { 'Content-Type': 'application/json', 'X-Redmine-API-Key': REDMINE_API_KEY };
+  const options = { method, headers };
+  if (data && (method === 'POST' || method === 'PUT')) options.body = JSON.stringify(data);
+  const response = await fetch(url, options);
+  if (!response.ok) { const err = await response.text(); throw new Error(`Redmine API error: ${response.status} ${err}`); }
+  return response.json();
+}
+
 // ── Routes ──
 server.register(require('./routes/pipeline'), { query });
+server.register(require('./routes/projects'), { query });
+server.register(require('./routes/redmine'), { query, redmineRequest, REDMINE_URL, REDMINE_API_KEY, REDMINE_PROJECT_IDENTIFIER, REDMINE_FEATURE_TRACKER_ID, REDMINE_TODO_TRACKER_ID });
 
 // ── Start ──
 const start = async () => {

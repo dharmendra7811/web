@@ -21,6 +21,32 @@ server.post('/api/projects', async (request, reply) => {
 
   const project = result.rows[0];
 
+  // Trigger pipeline on create if PRD text provided
+  if (prd_text) {
+    try {
+      const { runPipeline } = require('../orchestrator');
+      const nextRunRes = await query(
+        'SELECT COALESCE(MAX(run_number), 0) + 1 as next_num FROM pipeline_runs WHERE project_id = $1',
+        [project.id]
+      );
+      const runNumber = nextRunRes.rows[0].next_num;
+      const runRes = await query(
+        "INSERT INTO pipeline_runs (project_id, run_number, phase) VALUES ($1, $2, 'idle') RETURNING id",
+        [project.id, runNumber]
+      );
+      const runId = runRes.rows[0].id;
+      await query("UPDATE projects SET state = 'parsing' WHERE id = $1", [project.id]);
+      runPipeline(runId, 'discover', query).catch(err => {
+        console.error(`[Pipeline ${runId}] Failed:`, err);
+        query("UPDATE projects SET state = 'idle' WHERE id = $1", [project.id]).catch(() => {});
+      });
+      project.state = 'parsing';
+      project.pipeline_run_id = runId;
+    } catch (err) {
+      console.error('[Project Create] Pipeline trigger failed:', err);
+    }
+  }
+
   return project;
 });
 
@@ -85,10 +111,24 @@ server.delete('/api/projects/:id', async (request, reply) => {
 });
 
 server.post('/api/projects/:id/prd', async (request, reply) => {
-  // In a real app, handle file upload here
-  // For now, we assume prd_text is in the body
   const { id } = request.params;
-  const { prd_text } = request.body;
+  let prd_text = '';
+
+  // Handle multipart file upload or JSON body
+  const contentType = request.headers['content-type'] || '';
+  if (contentType.includes('multipart/form-data')) {
+    const data = await request.file();
+    if (data) {
+      const buffer = await data.toBuffer();
+      prd_text = buffer.toString('utf-8');
+    }
+  } else {
+    prd_text = (request.body || {}).prd_text || '';
+  }
+
+  if (!prd_text) {
+    return reply.code(400).send({ error: 'No PRD text provided' });
+  }
 
   const result = await query(
     'UPDATE projects SET prd_text = $1 WHERE id = $2 RETURNING *',
@@ -101,8 +141,35 @@ server.post('/api/projects/:id/prd', async (request, reply) => {
 
   const project = result.rows[0];
 
-  // Pipeline trigger moved to POST /api/projects/:id/clarify
-  // We no longer trigger extraction immediately on PRD update
+  // Trigger the analysis pipeline after PRD upload
+  try {
+    const { runPipeline } = require('../orchestrator');
+
+    const nextRunRes = await query(
+      'SELECT COALESCE(MAX(run_number), 0) + 1 as next_num FROM pipeline_runs WHERE project_id = $1',
+      [id]
+    );
+    const runNumber = nextRunRes.rows[0].next_num;
+
+    const runRes = await query(
+      "INSERT INTO pipeline_runs (project_id, run_number, phase) VALUES ($1, $2, 'idle') RETURNING id",
+      [id, runNumber]
+    );
+    const runId = runRes.rows[0].id;
+
+    await query("UPDATE projects SET state = 'parsing' WHERE id = $1", [id]);
+
+    // Fire-and-forget: run pipeline in the background
+    runPipeline(runId, 'discover', query).catch(err => {
+      console.error(`[Pipeline ${runId}] Failed:`, err);
+      query("UPDATE projects SET state = 'idle' WHERE id = $1", [id]).catch(() => {});
+    });
+
+    project.pipeline_run_id = runId;
+  } catch (pipelineErr) {
+    console.error('[PRD Upload] Failed to trigger pipeline:', pipelineErr);
+    // Pipeline trigger failed, but PRD update succeeded — still return project
+  }
 
   return project;
 });

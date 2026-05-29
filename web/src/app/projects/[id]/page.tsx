@@ -8,6 +8,7 @@ import FolderTree from '@/app/components/features/FolderTree';
 import GraphView from '@/app/components/graph/GraphView';
 import PipelineStatus from '@/app/components/prd/PipelineStatus';
 import CheckpointPanel from '@/app/components/prd/CheckpointPanel';
+import ModuleReviewPanel from '@/app/components/prd/ModuleReviewPanel';
 import ProjectHeader from '@/app/components/layout/ProjectHeader';
 import { getProject, syncProjectToRedmine, getRedmineStatus, getRedmineProjects, setRedmineProject } from '@/lib/api';
 
@@ -24,6 +25,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [redmineProjects, setRedmineProjects] = useState<any[]>([]);
   const [selectedRedmineProject, setSelectedRedmineProject] = useState<string>('');
   const [pipelinePhase, setPipelinePhase] = useState<string>('idle');
+  const [pipelineRunId, setPipelineRunId] = useState<string | null>(null);
 
   useEffect(() => {
     const savedTheme = localStorage.getItem('requirements-os-theme');
@@ -170,7 +172,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             </div>
           )}
 
-          <PipelineStatus projectId={id} theme={theme} onPhaseChange={setPipelinePhase} />
+          <PipelineStatus projectId={id} theme={theme} onPhaseChange={setPipelinePhase} onRunChange={(run) => setPipelineRunId(run?.id || null)} />
 
           {/* View Toggles */}
           <div className={`flex items-center border rounded text-xs ${theme === 'dark' ? 'border-[#30363d] bg-[#0d1117]' : 'border-[#d0d7de] bg-white'}`}>
@@ -216,7 +218,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       <div className="flex-1 flex overflow-hidden">
         {/* Brainstorm Chat — primary panel */}
         <div className={`flex-1 min-w-0 border-r ${theme === 'dark' ? 'border-[#30363d]' : 'border-[#d0d7de]'}`}>
-          <BrainstormChat projectId={id} theme={theme} onFeatureChange={handleFeatureChange} />
+          <BrainstormChat projectId={id} pipelineRunId={pipelineRunId} theme={theme} onFeatureChange={handleFeatureChange} />
         </div>
 
         {/* Right panel: Workspace Explorer / Graph / Architecture */}
@@ -231,8 +233,20 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
               </span>
             </div>
             <div className="flex-1 overflow-y-auto p-3">
-              <CheckpointPanel projectId={id} theme={theme} onResolved={loadProject} />
-              <FolderTree projectId={id} theme={theme} />
+              {pipelinePhase === 'awaiting_modules' && pipelineRunId ? (
+                <ModuleReviewPanel
+                  projectId={id}
+                  runId={pipelineRunId}
+                  phase={pipelinePhase}
+                  theme={theme}
+                  onContinue={() => { loadProject(); setPipelinePhase('extract'); }}
+                />
+              ) : (
+                <>
+                  <CheckpointPanel projectId={id} theme={theme} onResolved={loadProject} />
+                  <FolderTree projectId={id} theme={theme} />
+                </>
+              )}
             </div>
           </div>
         )}

@@ -26,7 +26,7 @@ export default function CheckpointPanel({ projectId, theme, onResolved }: Checkp
     setError(null);
     try {
       const runs = await getPipelineRuns(projectId);
-      const awaiting = runs.find(r => r.phase === 'awaiting_human') || null;
+      const awaiting = runs.find(r => r.phase === 'awaiting_modules') || null;
       setRun(awaiting);
 
       if (awaiting) {

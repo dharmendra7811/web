@@ -8,30 +8,25 @@ interface PipelineStatusProps {
   projectId: string;
   theme: 'light' | 'dark';
   onPhaseChange?: (phase: string) => void;
+  onRunChange?: (run: PipelineRun | null) => void;
 }
 
 // The 6 display phases (ordered left-to-right in the progress bar)
-const PHASES = ['chunking', 'features', 'critic', 'schema', 'api', 'todo'] as const;
+const PHASES = ['discover', 'extract'] as const;
 const PHASE_LABELS: Record<string, string> = {
-  chunking: 'Chunking',
-  features: 'Features',
-  critic: 'Critic',
-  schema: 'Schema',
-  api: 'API',
-  todo: 'Todo',
+  discover: 'Discover',
+  extract: 'Extract',
 };
 
 // Phases that are considered "completed" before a given phase index
 function phaseIndex(phase: string): number {
-  // awaiting_human is the Critic phase waiting for input
-  if (phase === 'awaiting_human') return PHASES.indexOf('critic');
-  if (phase === 'done') return PHASES.length; // all done
-  if (phase === 'failed') return -1; // handled separately
-  if (phase === 'idle') return -1;
+  if (phase === 'awaiting_modules') return PHASES.indexOf('discover');
+  if (phase === 'done') return PHASES.length;
+  if (phase === 'failed' || phase === 'idle') return -1;
   return PHASES.indexOf(phase as (typeof PHASES)[number]);
 }
 
-type PhaseStatus = 'complete' | 'current' | 'awaiting_human' | 'pending' | 'failed';
+type PhaseStatus = 'complete' | 'current' | 'awaiting_modules' | 'pending' | 'failed';
 
 function getPhaseStatus(run: PipelineRun | null, target: string): PhaseStatus {
   if (!run || run.phase === 'idle') return 'pending';
@@ -39,23 +34,16 @@ function getPhaseStatus(run: PipelineRun | null, target: string): PhaseStatus {
   const currentIdx = phaseIndex(run.phase);
   const targetIdx = PHASES.indexOf(target as (typeof PHASES)[number]);
 
-  if (run.phase === 'failed') {
-    // The failed phase itself is marked failed, earlier ones are complete
-    const failedIdx = phaseIndex(run.resume_from_phase || run.phase);
-    if (targetIdx < failedIdx) return 'complete';
-    if (targetIdx === failedIdx) return 'failed';
-    return 'pending';
-  }
+  if (run.phase === 'failed') return 'pending';
 
-  // awaiting_human on critic phase
-  if (run.phase === 'awaiting_human' && target === 'critic') return 'awaiting_human';
+  if (run.phase === 'awaiting_modules' && target === 'discover') return 'awaiting_modules';
 
   if (targetIdx < currentIdx) return 'complete';
   if (targetIdx === currentIdx) return 'current';
   return 'pending';
 }
 
-export default function PipelineStatus({ projectId, theme, onPhaseChange }: PipelineStatusProps) {
+export default function PipelineStatus({ projectId, theme, onPhaseChange, onRunChange }: PipelineStatusProps) {
   const [run, setRun] = useState<PipelineRun | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +62,7 @@ export default function PipelineStatus({ projectId, theme, onPhaseChange }: Pipe
         prevPhaseRef.current = latest.phase;
         onPhaseChange?.(latest.phase);
       }
+      onRunChange?.(latest);
     } catch (err) {
       console.error('Failed to fetch pipeline runs:', err);
       setError('Could not load pipeline status');
@@ -220,7 +209,7 @@ export default function PipelineStatus({ projectId, theme, onPhaseChange }: Pipe
                       ? t === 'dark'
                         ? 'text-blue-400 animate-pulse'
                         : 'text-blue-600 animate-pulse'
-                      : status === 'awaiting_human'
+                      : status === 'awaiting_modules'
                       ? t === 'dark'
                         ? 'text-yellow-400'
                         : 'text-yellow-600'
@@ -237,7 +226,7 @@ export default function PipelineStatus({ projectId, theme, onPhaseChange }: Pipe
                     ? '✓'
                     : status === 'current'
                     ? '→'
-                    : status === 'awaiting_human'
+                    : status === 'awaiting_modules'
                     ? '?'
                     : status === 'failed'
                     ? '✗'
@@ -255,7 +244,7 @@ export default function PipelineStatus({ projectId, theme, onPhaseChange }: Pipe
                       ? t === 'dark'
                         ? 'text-blue-400'
                         : 'text-blue-600'
-                      : status === 'awaiting_human'
+                      : status === 'awaiting_modules'
                       ? t === 'dark'
                         ? 'text-yellow-400'
                         : 'text-yellow-600'

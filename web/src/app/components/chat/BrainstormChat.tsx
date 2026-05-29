@@ -14,10 +14,12 @@ import {
   getProject,
   entityFirstExtract,
   clarifyGap,
+  reExtractPipeline,
 } from '@/lib/api';
 
 interface BrainstormChatProps {
   projectId: string;
+  pipelineRunId?: string | null;
   theme?: 'light' | 'dark';
   onFeatureChange?: () => void;
 }
@@ -120,7 +122,7 @@ function GapAnswerInput({
   );
 }
 
-export default function BrainstormChat({ projectId, theme = 'dark', onFeatureChange }: BrainstormChatProps) {
+export default function BrainstormChat({ projectId, pipelineRunId, theme = 'dark', onFeatureChange }: BrainstormChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([{
     id: 'welcome',
     sender: 'ai',
@@ -349,7 +351,7 @@ export default function BrainstormChat({ projectId, theme = 'dark', onFeatureCha
         setMessages(prev => [...prev, {
           id: `ai-${Date.now()}`,
           sender: 'ai',
-          text: `PRD analysis complete, but ${response.blocking_gaps.length} blocking gap(s) need your input before features can be generated:\n\n${gapLines}\n\nPlease answer each question above in the chat.`,
+          text: `PRD analysis complete, but ${response.blocking_gaps!.length} blocking gap(s) need your input before features can be generated:\n\n${gapLines}\n\nPlease answer each question above in the chat.`,
           state: 'needs_clarification',
         }]);
         if (onFeatureChange) onFeatureChange();
@@ -361,13 +363,15 @@ export default function BrainstormChat({ projectId, theme = 'dark', onFeatureCha
       let summary = `Extraction complete.\n\n`;
       summary += `**${response.entity_count} entities**, **${response.module_count} modules**, **${response.features_generated} features**, **${response.todos_generated} todos**\n`;
 
-      if (response.gaps?.coverage_gaps?.length > 0) {
-        summary += `\n── Coverage Gaps (${response.gaps.coverage_gaps.length}) ──\n`;
-        for (const g of response.gaps.coverage_gaps.slice(0, 5)) summary += `  🔴 ${g.description}\n`;
+      const cg = response.gaps?.coverage_gaps;
+      const ra = response.gaps?.risky_assumptions;
+      if (cg && cg.length > 0) {
+        summary += `\n── Coverage Gaps (${cg.length}) ──\n`;
+        for (const g of cg.slice(0, 5)) summary += `  🔴 ${g.description}\n`;
       }
-      if (response.gaps?.risky_assumptions?.length > 0) {
-        summary += `\n── Risky Assumptions (${response.gaps.risky_assumptions.length}) ──\n`;
-        for (const r of response.gaps.risky_assumptions.slice(0, 5)) summary += `  🟡 [${r.feature}] ${r.risk}\n`;
+      if (ra && ra.length > 0) {
+        summary += `\n── Risky Assumptions (${ra.length}) ──\n`;
+        for (const r of ra.slice(0, 5)) summary += `  🟡 [${r.feature}] ${r.risk}\n`;
       }
 
       setMessages(prev => [...prev, {
@@ -668,13 +672,22 @@ export default function BrainstormChat({ projectId, theme = 'dark', onFeatureCha
               [UPLOAD PRD]
             </button>
             <button
-              onClick={handleEntityExtract}
+              onClick={async () => {
+                if (pipelineRunId) {
+                  setEntityExtracting(true);
+                  try { await reExtractPipeline(projectId, pipelineRunId); if (onFeatureChange) onFeatureChange(); }
+                  catch (err: any) { setMessages(prev => [...prev, { id: `error-${Date.now()}`, sender: 'ai', text: `Re-extract failed: ${err.message}` }]); }
+                  finally { setEntityExtracting(false); }
+                } else {
+                  handleEntityExtract();
+                }
+              }}
               disabled={entityExtracting}
               className={`text-[10px] uppercase font-bold px-2 py-1 border rounded transition-colors ${entityExtracting ? 'opacity-50 cursor-wait' : ''
                 } ${tc('border-[#a371f7]/40 text-[#a371f7] hover:bg-[#a371f7]/10', 'border-[#8250df]/40 text-[#8250df] hover:bg-[#8250df]/10')
                 }`}
             >
-              {entityExtracting ? 'EXTRACTING...' : '[ENTITY-FIRST]'}
+              {entityExtracting ? 'EXTRACTING...' : '[RE-EXTRACT]'}
             </button>
           </div>
         </div>
